@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2005-2008 Jive Software. All rights reserved.
+ * Copyright (C) 2005-2008 Jive Software, 2022 Ignite Realtime Foundation. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,14 +16,16 @@
 
 package org.jivesoftware.openfire.session;
 
+import org.jivesoftware.openfire.SessionManager;
 import org.jivesoftware.openfire.container.BasicModule;
+import org.jivesoftware.openfire.event.SessionEventDispatcher;
 import org.jivesoftware.openfire.event.SessionEventListener;
 import org.jivesoftware.util.SystemProperty;
 import org.jivesoftware.util.TaskEngine;
-import org.jivesoftware.openfire.event.SessionEventDispatcher;
-import org.xmpp.packet.IQ;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.xmpp.packet.IQ;
+import org.xmpp.packet.JID;
 
 import java.time.Duration;
 import java.time.temporal.ChronoUnit;
@@ -87,10 +89,15 @@ public class SoftwareVersionManager extends BasicModule implements SessionEventL
     }
 
     @Override
-    public void resourceBound(Session session) {
+    public void resourceBound(final Session session) {
         if (!VERSION_QUERY_ENABLED.getValue()) {
             return;
         }
+
+        // Prevent retaining a reference to the session object, while waiting for the right time to execute the query.
+        // There's (unproven) concern that this is a factor in issue OF-2367. Better safe than sorry.
+        final JID address = session.getAddress();
+
         // The server should not send requests to the client before the client session
         // has been established (see IQSessionEstablishmentHandler). Sadly, Openfire
         // does not provide a hook for this. For now, the resource bound event is
@@ -98,7 +105,8 @@ public class SoftwareVersionManager extends BasicModule implements SessionEventL
         TaskEngine.getInstance().schedule( new TimerTask() {
             @Override
             public void run() { try {
-                if (session.isClosed() || !VERSION_QUERY_ENABLED.getValue()){
+                final Session session = SessionManager.getInstance().getSession(address);
+                if (session == null || session.isClosed() || !VERSION_QUERY_ENABLED.getValue()){
                     return;
                 }
 
@@ -110,6 +118,6 @@ public class SoftwareVersionManager extends BasicModule implements SessionEventL
             } catch (Exception e) {
                 Log.error("Exception while trying to query a client ({}) for its software version.", session.getAddress(), e);
             }}
-        }, VERSION_QUERY_DELAY.getValue().toMillis()); // Let time pass for the session establishment to have occurred.
+        }, VERSION_QUERY_DELAY.getValue()); // Let time pass for the session establishment to have occurred.
     }
 }

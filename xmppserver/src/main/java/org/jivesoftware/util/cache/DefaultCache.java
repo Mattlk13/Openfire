@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2004-2008 Jive Software. All rights reserved.
+ * Copyright (C) 2004-2008 Jive Software, 2022 Ignite Realtime Foundation. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,21 +15,19 @@
  */
 package org.jivesoftware.util.cache;
 
-import java.io.Serializable;
-import java.time.Duration;
-import java.util.Collection;
-import java.util.HashMap;
-import java.util.HashSet;
-import java.util.Map;
-import java.util.Set;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.stream.Collectors;
-
+import org.jivesoftware.openfire.cluster.ClusteredCacheEntryListener;
 import org.jivesoftware.util.JiveGlobals;
 import org.jivesoftware.util.LinkedListNode;
 import org.jivesoftware.util.StringUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
+import javax.annotation.Nonnull;
+import java.io.Serializable;
+import java.time.Duration;
+import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.stream.Collectors;
 
 /**
  * Default, non-distributed implementation of the Cache interface.
@@ -58,10 +56,10 @@ import org.slf4j.LoggerFactory;
  */
 public class DefaultCache<K extends Serializable, V extends Serializable> implements Cache<K, V> {
 
-    private static final String NULL_KEY_IS_NOT_ALLOWED = "Null key is not allowed!";
-    private static final String NULL_VALUE_IS_NOT_ALLOWED = "Null value is not allowed!";
-    private static final boolean allowNull = JiveGlobals.getBooleanProperty("cache.allow.null", false);
-    private static final long MAX_CULL_COUNT_PERIOD = Duration.ofHours(12).toMillis();
+    protected static final String NULL_KEY_IS_NOT_ALLOWED = "Null key is not allowed!";
+    protected static final String NULL_VALUE_IS_NOT_ALLOWED = "Null value is not allowed!";
+    protected static final boolean allowNull = JiveGlobals.getBooleanProperty("cache.allow.null", false);
+    protected static final long MAX_CULL_COUNT_PERIOD = Duration.ofHours(12).toMillis();
 
     private static final Logger Log = LoggerFactory.getLogger(DefaultCache.class);
     // Contains the set of times when the Cache was last culled
@@ -158,7 +156,7 @@ public class DefaultCache<K extends Serializable, V extends Serializable> implem
         if (maxCacheSize > 0 && objectSize > maxCacheSize * .90) {
             Log.warn("Cache: " + name + " -- object with key " + key +
                     " is too large to fit in cache. Size is " + objectSize);
-            return value;
+            return answer;
         }
         cacheSize += objectSize;
         final DefaultCache.CacheObject<V> cacheObject = new DefaultCache.CacheObject<>(value, objectSize);
@@ -269,6 +267,7 @@ public class DefaultCache<K extends Serializable, V extends Serializable> implem
     }
 
     @Override
+    @Nonnull
     public Collection<V> values() {
         // First, clear all entries that have been in cache longer than the
         // maximum defined age.
@@ -315,6 +314,7 @@ public class DefaultCache<K extends Serializable, V extends Serializable> implem
     }
 
     @Override
+    @Nonnull
     public Set<Entry<K, V>> entrySet() {
         // First, clear all entries that have been in cache longer than the
         // maximum defined age.
@@ -328,6 +328,7 @@ public class DefaultCache<K extends Serializable, V extends Serializable> implem
     }
 
     @Override
+    @Nonnull
     public Set<K> keySet() {
         // First, clear all entries that have been in cache longer than the
         // maximum defined age.
@@ -389,19 +390,6 @@ public class DefaultCache<K extends Serializable, V extends Serializable> implem
     }
 
     /**
-     * Returns the size of the cache contents in bytes limited to integer size. This value is only a
-     * rough approximation, so cache users should expect that actual VM
-     * memory used by the cache could be significantly higher than the value
-     * reported by this method.
-     *
-     * @return the size of the cache contents in bytes.
-     */
-    @Override
-    public int getCacheSize() {
-        return (int) Math.min(Integer.MAX_VALUE, cacheSize);
-    }
-
-    /**
      * Returns the size of the cache contents in bytes. This value is only a
      * rough approximation, so cache users should expect that actual VM
      * memory used by the cache could be significantly higher than the value
@@ -423,18 +411,6 @@ public class DefaultCache<K extends Serializable, V extends Serializable> implem
     @Override
     public long getMaxCacheSize() {
         return maxCacheSize;
-    }
-
-    /**
-     * Sets the maximum size of the cache in bytes limited to integer size. If the cache grows larger
-     * than the max size, the least frequently used items will be removed. If
-     * the max cache size is set to -1, there is no size limit.
-     *
-     * @param maxCacheSize the maximum size of this cache (-1 indicates unlimited max size).
-     */
-    @Override
-    public void setMaxCacheSize(final int maxCacheSize) {
-       setMaxCacheSize((long)maxCacheSize);
     }
 
     /**
@@ -640,5 +616,15 @@ public class DefaultCache<K extends Serializable, V extends Serializable> implem
                 throw e;
             }
         }
+    }
+
+    @Override
+    public String addClusteredCacheEntryListener(@Nonnull final ClusteredCacheEntryListener<K, V> listener, final boolean includeValues, final boolean includeEventsFromLocalNode) {
+        throw new UnsupportedOperationException();
+    }
+
+    @Override
+    public void removeClusteredCacheEntryListener(@Nonnull final String listenerId) {
+        throw new UnsupportedOperationException();
     }
 }

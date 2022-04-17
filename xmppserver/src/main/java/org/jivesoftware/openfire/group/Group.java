@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2004-2008 Jive Software. All rights reserved.
+ * Copyright (C) 2004-2008 Jive Software, 2022 Ignite Realtime Foundation. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -20,18 +20,10 @@ import java.io.Externalizable;
 import java.io.IOException;
 import java.io.ObjectInput;
 import java.io.ObjectOutput;
-import java.util.AbstractCollection;
-import java.util.Collection;
-import java.util.Collections;
-import java.util.HashMap;
-import java.util.HashSet;
-import java.util.Iterator;
-import java.util.Map;
-import java.util.Set;
+import java.util.*;
 import java.util.concurrent.ConcurrentSkipListSet;
 
 import org.jivesoftware.openfire.XMPPServer;
-import org.jivesoftware.openfire.event.GroupEventDispatcher;
 import org.jivesoftware.util.PersistableMap;
 import org.jivesoftware.util.cache.CacheSizes;
 import org.jivesoftware.util.cache.Cacheable;
@@ -40,6 +32,9 @@ import org.jivesoftware.util.cache.ExternalizableUtil;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.xmpp.packet.JID;
+
+import javax.annotation.Nonnull;
+import javax.annotation.Nullable;
 
 /**
  * Groups organize users into a single entity for easier management.<p>
@@ -55,6 +50,10 @@ import org.xmpp.packet.JID;
 public class Group implements Cacheable, Externalizable {
 
     private static final Logger Log = LoggerFactory.getLogger(Group.class);
+
+    public static final String SHARED_ROSTER_SHOW_IN_ROSTER_PROPERTY_KEY = "sharedRoster.showInRoster";
+    public static final String SHARED_ROSTER_DISPLAY_NAME_PROPERTY_KEY = "sharedRoster.displayName";
+    public static final String SHARED_ROSTER_GROUP_LIST_PROPERTY_KEY = "sharedRoster.groupList";
 
     private transient GroupProvider provider;
     private transient GroupManager groupManager;
@@ -171,21 +170,18 @@ public class Group implements Cacheable, Externalizable {
         }
         try {
             String originalName = this.name;
-            GroupJID originalJID = getJID();
             provider.setName(originalName, name);
             this.name = name;
             this.jid = null; // rebuilt when needed
 
-            // Fire event.
-            Map<String, Object> params = new HashMap<>();
-            params.put("type", "nameModified");
-            params.put("originalValue", originalName);
-            params.put("originalJID", originalJID);
-            GroupEventDispatcher.dispatchEvent(this, GroupEventDispatcher.EventType.group_modified,
-                    params);
+            groupManager.renameGroupPostProcess(this, originalName);
         }
         catch (GroupAlreadyExistsException e) {
             Log.error("Failed to change group name; group already exists");
+        } catch (GroupNameInvalidException e) {
+            Log.error("Failed to change group name; new group name is not valid");
+        } catch (GroupNotFoundException e) {
+            Log.error("Failed to change group name; the provided group name cannot be found");
         }
     }
 
@@ -217,12 +213,8 @@ public class Group implements Cacheable, Externalizable {
             String originalDescription = this.description;
             provider.setDescription(name, description);
             this.description = description;
-            // Fire event.
-            Map<String, Object> params = new HashMap<>();
-            params.put("type", "descriptionModified");
-            params.put("originalValue", originalDescription);
-            GroupEventDispatcher.dispatchEvent(this,
-                    GroupEventDispatcher.EventType.group_modified, params);
+
+            groupManager.redescribeGroupPostProcess(this, originalDescription);
         }
         catch (Exception e) {
             Log.error(e.getMessage(), e);
@@ -249,6 +241,115 @@ public class Group implements Cacheable, Externalizable {
         }
         // Return a wrapper that will intercept add and remove commands.
         return properties;
+    }
+
+    /**
+     * Disable contact list group sharing for this group.
+     */
+    public void shareWithNobody() {
+        final PersistableMap<String, String> properties = getProperties();
+        properties.put(SHARED_ROSTER_SHOW_IN_ROSTER_PROPERTY_KEY, SharedGroupVisibility.nobody.getDbValue());
+        properties.put(SHARED_ROSTER_DISPLAY_NAME_PROPERTY_KEY, "");
+        properties.put(SHARED_ROSTER_GROUP_LIST_PROPERTY_KEY, "");
+    }
+
+    /**
+     * Enable contact list group sharing for this group. The group is shared on the contact list of all users defined in
+     * Openfire: every user in this group is added to the contact list of every user in Openfire, grouped by the
+     * provided display name.
+     *
+     * @param displayName The name of the group that as shown in the contact lists of users.
+     */
+    public void shareWithEverybody(@Nonnull final String displayName) {
+        final PersistableMap<String, String> properties = getProperties();
+        properties.put(SHARED_ROSTER_SHOW_IN_ROSTER_PROPERTY_KEY, SharedGroupVisibility.everybody.getDbValue());
+        properties.put(SHARED_ROSTER_DISPLAY_NAME_PROPERTY_KEY, displayName);
+        properties.remove(SHARED_ROSTER_GROUP_LIST_PROPERTY_KEY);
+    }
+
+    /**
+     * Enable contact list group sharing for this group. The group is shared on the contact list of all users in the
+     * same group: every user in this group is added to the contact list of every other user in the group, grouped by
+     * the provided display name.
+     *
+     * @param displayName The name of the group that as shown in the contact lists of users.
+     */
+    public void shareWithUsersInSameGroup(@Nonnull final String displayName) {
+        final PersistableMap<String, String> properties = getProperties();
+        properties.put(SHARED_ROSTER_SHOW_IN_ROSTER_PROPERTY_KEY, SharedGroupVisibility.usersOfGroups.getDbValue());
+        properties.put(SHARED_ROSTER_DISPLAY_NAME_PROPERTY_KEY, displayName);
+        properties.put(SHARED_ROSTER_GROUP_LIST_PROPERTY_KEY, "");
+    }
+
+    /**
+     * Enable contact list group sharing for this group. The group is shared on the contact list of all users in each of
+     * the provided group: every user in this group is added to the contact list of every user in each of the provided
+     * other groups, grouped by the provided display name.
+     *
+     * @param groupNames Name of groups for which all users should
+     * @param displayName The name of the group that as shown in the contact lists of users.
+     */
+    public void shareWithUsersInGroups(@Nonnull final List<String> groupNames, @Nonnull final String displayName) {
+        final PersistableMap<String, String> properties = getProperties();
+        properties.put(SHARED_ROSTER_SHOW_IN_ROSTER_PROPERTY_KEY, SharedGroupVisibility.usersOfGroups.getDbValue());
+        properties.put(SHARED_ROSTER_DISPLAY_NAME_PROPERTY_KEY, displayName);
+        properties.put(SHARED_ROSTER_GROUP_LIST_PROPERTY_KEY, String.join(",", groupNames));
+    }
+
+    /**
+     * When contact list group sharing has been enabled, the users in his group will be added to the contact list of
+     * every entity that the group is shared with. On their contact lists, the users from this group will be added
+     * to a group by a name that is equal to the return value of this method.
+     *
+     * This method may return a null value when contact list sharing has not yet been configured, or an empty string
+     * when it has explicitly been configured to be disabled ("share with nobody").
+     *
+     * @return A name to be used for a contact list group when sharing is enabled.
+     */
+    @Nullable
+    public String getSharedDisplayName() {
+        return getProperties().get(SHARED_ROSTER_DISPLAY_NAME_PROPERTY_KEY);
+    }
+
+    /**
+     * Defines to which entities this group is shared, using the contact list group sharing. This method can return
+     * 'nobody', which differs from a 'null' value, which is returned when contact list sharing has not yet been
+     * configured.
+     *
+     * When 'usersOfGroups' is returned, {@link #getSharedWithUsersInGroupNames()} should be used to determine which to
+     * which groups this group is shared.
+     *
+     * @return To which users this group is shared with.
+     */
+    @Nullable
+    public SharedGroupVisibility getSharedWith() {
+        final String value = getProperties().get(SHARED_ROSTER_SHOW_IN_ROSTER_PROPERTY_KEY);
+        if (value == null) {
+            return null;
+        }
+        switch (value) {
+            case "nobody": return SharedGroupVisibility.nobody;
+            case "everybody": return SharedGroupVisibility.everybody;
+            case "onlyGroup": return SharedGroupVisibility.usersOfGroups;
+            default: return SharedGroupVisibility.nobody;
+        }
+    }
+
+    /**
+     * Defines the groups of users with which this group is shared if contact list group sharing is enabled and this
+     * group is shared with (other) groups (as defined by {@link #getSharedWith()}).
+     *
+     * @return A collection of group names, possibly empty.
+     */
+    @Nonnull
+    public List<String> getSharedWithUsersInGroupNames() {
+        final List<String> result = new ArrayList<>();
+        if (getSharedWith() != SharedGroupVisibility.usersOfGroups) {
+            return result;
+        }
+
+        result.addAll(provider.getVisibleGroupNames(this.name));
+        return result;
     }
 
     /**
@@ -395,18 +496,12 @@ public class Group implements Cacheable, Externalizable {
                     iter.remove();
                     // Remove the group user from the backend store.
                     provider.deleteMember(name, user);
-                    // Fire event.
+
+                    // Perform post-processing (cache updates and event notifications).
                     if (adminCollection) {
-                        Map<String, String> params = new HashMap<>();
-                        params.put("admin", user.toString());
-                        GroupEventDispatcher.dispatchEvent(Group.this,
-                                GroupEventDispatcher.EventType.admin_removed, params);
-                    }
-                    else {
-                        Map<String, String> params = new HashMap<>();
-                        params.put("member", user.toString());
-                        GroupEventDispatcher.dispatchEvent(Group.this,
-                                GroupEventDispatcher.EventType.member_removed, params);
+                        groupManager.adminRemovedPostProcess(Group.this, user);
+                    } else {
+                        groupManager.memberRemovedPostProcess(Group.this, user);
                     }
                 }
             };
@@ -433,36 +528,30 @@ public class Group implements Cacheable, Externalizable {
             }
             if (users.add(user)) {
                 if (alreadyGroupUser) {
-                    // Update the group user privileges in the backend store.
-                    provider.updateMember(name, user, adminCollection);
+                    try {
+                        // Update the group user privileges in the backend store.
+                        provider.updateMember(name, user, adminCollection);
+                    } catch (Exception e) {
+                        Log.error("Failed to update group member", e);
+                    }
                 }
                 else {
-                    // Add the group user to the backend store.
-                    provider.addMember(name, user, adminCollection);
+                    try {
+                        // Add the group user to the backend store.
+                        provider.addMember(name, user, adminCollection);
+                    } catch (Exception e) {
+                        Log.error("Failed to add group member", e);
+                    }
+
                 }
 
-                // Fire event.
-                Map<String, String> params = new HashMap<>();
+                // Perform post-processing (cache updates and event notifications).
                 if (adminCollection) {
-                    params.put("admin", user.toString());
-                    if (alreadyGroupUser) {
-                        params.put("member", user.toString());
-                        GroupEventDispatcher.dispatchEvent(Group.this,
-                                    GroupEventDispatcher.EventType.member_removed, params);
-                    }
-                    GroupEventDispatcher.dispatchEvent(Group.this,
-                                GroupEventDispatcher.EventType.admin_added, params);
+                    groupManager.adminAddedPostProcess(Group.this, user, alreadyGroupUser);
+                } else {
+                    groupManager.memberAddedPostProcess(Group.this, user, alreadyGroupUser);
                 }
-                else {
-                    params.put("member", user.toString());
-                    if (alreadyGroupUser) {
-                        params.put("admin", user.toString());
-                        GroupEventDispatcher.dispatchEvent(Group.this,
-                                    GroupEventDispatcher.EventType.admin_removed, params);
-                    }
-                    GroupEventDispatcher.dispatchEvent(Group.this,
-                                GroupEventDispatcher.EventType.member_added, params);
-                }
+
                 // If the user was a member that became an admin or vice versa then remove the
                 // user from the other collection
                 if (alreadyGroupUser) {

@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<install4j version="8.0.6" transformSequenceNumber="8">
+<install4j version="9.0.5" transformSequenceNumber="9">
   <directoryPresets config="src/bin/extra/sysconfig/openfire" />
   <application name="${compiler:APP_NAME}" applicationId="${compiler:APPLICATION_ID}" mediaDir="../../target/distributions" mediaFilePattern="${compiler:FILE_PREFIX}_${compiler:sys.version}" compression="9" lzmaCompression="true" shortName="${compiler:APP_SHORT_NAME}" publisher="${compiler:PUBLISHER}" publisherWeb="${compiler:PUBLISHER_URL}" version="${compiler:sys.version}" allPathsRelative="true" autoSave="true" macVolumeId="419a18ebe125f2bf" javaMinVersion="1.8" allowBetaVM="true">
     <languages>
@@ -29,7 +29,7 @@
       <variable name="WINDOWS_INSTALL_DIR" value="Openfire" />
     </variables>
   </application>
-  <files keepModificationTimes="true">
+  <files keepModificationTimes="true" preserveSymlinks="false">
     <mountPoints>
       <mountPoint id="33" location="resources" />
       <mountPoint id="34" location="resources/security" />
@@ -59,7 +59,7 @@
       <executable name="${compiler:PRODUCT_NAME}-service" iconSet="true" iconFile="./images/service.ico" executableDir="bin" stderrFile="../logs/stderror.log" redirectStdout="true" stdoutFile="../logs/stdout.log" executableMode="service" singleInstance="true" serviceDescription="${compiler:APP_NAME}" dpiAware="false">
         <versionInfo include="true" fileDescription="${compiler:APP_NAME}" legalCopyright="${compiler:PUBLISHER}" internalName="${compiler:APP_NAME}" />
       </executable>
-      <java mainClass="org.jivesoftware.openfire.starter.ServerStarter" vmParameters="-Djdk.tls.ephemeralDHKeySize=matched -Djsse.SSLEngine.acceptLargeFragments=true -Dlog4j.configurationFile=&quot;${launcher:sys.launcherDirectory}/../lib/log4j2.xml&quot; -Dlog4j.skipJansi=false -DopenfireHome=&quot;${launcher:sys.launcherDirectory}../&quot;" preferredVM="server">
+      <java mainClass="org.jivesoftware.openfire.starter.ServerStarter" vmParameters="-Djdk.tls.ephemeralDHKeySize=matched -Djsse.SSLEngine.acceptLargeFragments=true -Dlog4j.configurationFile=&quot;${launcher:sys.launcherDirectory}/../lib/log4j2.xml&quot; -Dlog4j2.formatMsgNoLookups=true -Dlog4j.skipJansi=false -DopenfireHome=&quot;${launcher:sys.launcherDirectory}../&quot;" preferredVM="server">
         <classPath>
           <scanDirectory location="lib" failOnError="false" />
         </classPath>
@@ -75,7 +75,7 @@
       <executable name="${compiler:PRODUCT_NAME}" iconSet="true" iconFile="./images/openfire.ico" executableDir="bin" stderrFile="../logs/stderr.log" redirectStdout="true" stdoutFile="../logs/stdout.log" executableMode="gui" singleInstance="true" executionLevel="highestAvailable" dpiAware="false">
         <versionInfo include="true" fileDescription="${compiler:APP_NAME} Launcher" legalCopyright="${compiler:PUBLISHER}" internalName="${compiler:APP_NAME}" />
       </executable>
-      <java mainClass="org.jivesoftware.openfire.launcher.Launcher" vmParameters="-Djdk.tls.ephemeralDHKeySize=matched -Djsse.SSLEngine.acceptLargeFragments=true -Dlog4j.configurationFile=&quot;${launcher:sys.launcherDirectory}/../lib/log4j2.xml&quot; -Dlog4j.skipJansi=false -Dappdir=&quot;${launcher:sys.launcherDirectory}&quot; -DopenfireHome=&quot;${launcher:sys.launcherDirectory}../&quot;">
+      <java mainClass="org.jivesoftware.openfire.launcher.Launcher" vmParameters="-Djdk.tls.ephemeralDHKeySize=matched -Djsse.SSLEngine.acceptLargeFragments=true -Dlog4j.configurationFile=&quot;${launcher:sys.launcherDirectory}/../lib/log4j2.xml&quot; -Dlog4j2.formatMsgNoLookups=true -Dlog4j.skipJansi=false -Dappdir=&quot;${launcher:sys.launcherDirectory}&quot; -DopenfireHome=&quot;${launcher:sys.launcherDirectory}../&quot;">
         <classPath>
           <scanDirectory location="lib" failOnError="false" />
         </classPath>
@@ -91,7 +91,7 @@
       <executable name="${compiler:PRODUCT_NAME}d" iconSet="true" iconFile="./images/openfired.ico" executableDir="bin" redirectStderr="false" executableMode="console" singleInstance="true" executionLevel="highestAvailable" dpiAware="false">
         <versionInfo include="true" fileDescription="${compiler:APP_NAME} Server" legalCopyright="${compiler:PUBLISHER}" internalName="${compiler:APP_NAME}" />
       </executable>
-      <java mainClass="org.jivesoftware.openfire.starter.ServerStarter" vmParameters="-Djdk.tls.ephemeralDHKeySize=matched -Djsse.SSLEngine.acceptLargeFragments=true -Dlog4j.configurationFile=&quot;${launcher:sys.launcherDirectory}/../lib/log4j2.xml&quot; -Dlog4j.skipJansi=false -DopenfireHome=&quot;${launcher:sys.launcherDirectory}../&quot;" preferredVM="server">
+      <java mainClass="org.jivesoftware.openfire.starter.ServerStarter" vmParameters="-Djdk.tls.ephemeralDHKeySize=matched -Djsse.SSLEngine.acceptLargeFragments=true -Dlog4j.configurationFile=&quot;${launcher:sys.launcherDirectory}/../lib/log4j2.xml&quot; -Dlog4j2.formatMsgNoLookups=true -Dlog4j.skipJansi=false -DopenfireHome=&quot;${launcher:sys.launcherDirectory}../&quot;" preferredVM="server">
         <classPath>
           <scanDirectory location="lib" failOnError="false" />
         </classPath>
@@ -105,7 +105,7 @@
     </launcher>
     <launcher name="openfire" id="22">
       <executable name="${compiler:PRODUCT_NAME}" executableDir="bin" stderrFile="../logs/stderror.log" redirectStdout="true" stdoutFile="../logs/stdoutt.log" executableMode="service" dpiAware="false" />
-      <java mainClass="org.jivesoftware.openfire.starter.ServerStarter" vmParameters="-Djdk.tls.ephemeralDHKeySize=matched -Djsse.SSLEngine.acceptLargeFragments=true -DopenfireHome=&quot;${launcher:sys.launcherDirectory}../&quot; -Dopenfire.lib.dir=&quot;$app_home/lib&quot;" preferredVM="server">
+      <java mainClass="org.jivesoftware.openfire.starter.ServerStarter" vmParameters="-Djdk.tls.ephemeralDHKeySize=matched -Djsse.SSLEngine.acceptLargeFragments=true -Dlog4j.configurationFile=&quot;${launcher:sys.launcherDirectory}/../lib/log4j2.xml&quot; -Dlog4j2.formatMsgNoLookups=true -Dlog4j.skipJansi=false -DopenfireHome=&quot;${launcher:sys.launcherDirectory}../&quot; -Dopenfire.lib.dir=&quot;$app_home/lib&quot;" preferredVM="server">
         <classPath>
           <scanDirectory location="lib" />
         </classPath>
@@ -128,11 +128,19 @@
             <group id="1420" beanClass="com.install4j.runtime.beans.groups.VerticalFormComponentGroup">
               <serializedBean>
                 <property name="backgroundColor">
-                  <object class="java.awt.Color">
-                    <int>255</int>
-                    <int>255</int>
-                    <int>255</int>
-                    <int>255</int>
+                  <object class="com.install4j.runtime.beans.LightOrDarkColor">
+                    <object class="java.awt.Color">
+                      <int>255</int>
+                      <int>255</int>
+                      <int>255</int>
+                      <int>255</int>
+                    </object>
+                    <object class="java.awt.Color">
+                      <int>49</int>
+                      <int>52</int>
+                      <int>53</int>
+                      <int>255</int>
+                    </object>
                   </object>
                 </property>
                 <property name="imageAnchor" type="enum" class="com.install4j.api.beans.Anchor" value="NORTHEAST" />
@@ -151,6 +159,7 @@
               <action id="1294" beanClass="com.install4j.runtime.beans.actions.misc.RequestPrivilegesAction" actionElevationType="none">
                 <serializedBean>
                   <property name="failIfNotRootUnix" type="boolean" value="true" />
+                  <property name="linuxPrivilegeRequirement" type="enum" class="com.install4j.runtime.beans.actions.misc.PrivilegeRequirement" value="ROOT" />
                   <property name="obtainIfAdminMac" type="boolean" value="true" />
                   <property name="obtainIfNormalMac" type="boolean" value="true" />
                   <property name="obtainIfNormalWin" type="boolean" value="true" />
@@ -386,11 +395,19 @@ return console.askOkCancel(message, true);
             <group id="1420" beanClass="com.install4j.runtime.beans.groups.VerticalFormComponentGroup">
               <serializedBean>
                 <property name="backgroundColor">
-                  <object class="java.awt.Color">
-                    <int>255</int>
-                    <int>255</int>
-                    <int>255</int>
-                    <int>255</int>
+                  <object class="com.install4j.runtime.beans.LightOrDarkColor">
+                    <object class="java.awt.Color">
+                      <int>255</int>
+                      <int>255</int>
+                      <int>255</int>
+                      <int>255</int>
+                    </object>
+                    <object class="java.awt.Color">
+                      <int>49</int>
+                      <int>52</int>
+                      <int>53</int>
+                      <int>255</int>
+                    </object>
                   </object>
                 </property>
                 <property name="imageAnchor" type="enum" class="com.install4j.api.beans.Anchor" value="NORTHEAST" />
@@ -411,6 +428,7 @@ return console.askOkCancel(message, true);
               <action id="1350" beanClass="com.install4j.runtime.beans.actions.misc.RequestPrivilegesAction" actionElevationType="none">
                 <serializedBean>
                   <property name="failIfNotRootUnix" type="boolean" value="true" />
+                  <property name="linuxPrivilegeRequirement" type="enum" class="com.install4j.runtime.beans.actions.misc.PrivilegeRequirement" value="ROOT" />
                   <property name="obtainIfAdminMac" type="boolean" value="true" />
                   <property name="obtainIfNormalMac" type="boolean" value="true" />
                   <property name="obtainIfNormalWin" type="boolean" value="true" />
@@ -514,11 +532,19 @@ return console.askYesNo(message, true);
           <group id="1413" beanClass="com.install4j.runtime.beans.groups.VerticalFormComponentGroup" useExternalParametrization="true" externalParametrizationName="Customize banner image" externalParametrizationMode="include">
             <serializedBean>
               <property name="backgroundColor">
-                <object class="java.awt.Color">
-                  <int>255</int>
-                  <int>255</int>
-                  <int>255</int>
-                  <int>255</int>
+                <object class="com.install4j.runtime.beans.LightOrDarkColor">
+                  <object class="java.awt.Color">
+                    <int>255</int>
+                    <int>255</int>
+                    <int>255</int>
+                    <int>255</int>
+                  </object>
+                  <object class="java.awt.Color">
+                    <int>49</int>
+                    <int>52</int>
+                    <int>53</int>
+                    <int>255</int>
+                  </object>
                 </object>
               </property>
               <property name="borderSides">
@@ -527,11 +553,19 @@ return console.askYesNo(message, true);
                 </object>
               </property>
               <property name="imageEdgeBackgroundColor">
-                <object class="java.awt.Color">
-                  <int>25</int>
-                  <int>143</int>
-                  <int>220</int>
-                  <int>255</int>
+                <object class="com.install4j.runtime.beans.LightOrDarkColor">
+                  <object class="java.awt.Color">
+                    <int>25</int>
+                    <int>143</int>
+                    <int>220</int>
+                    <int>255</int>
+                  </object>
+                  <object class="java.awt.Color">
+                    <int>0</int>
+                    <int>74</int>
+                    <int>151</int>
+                    <int>255</int>
+                  </object>
                 </object>
               </property>
               <property name="imageEdgeBorder" type="boolean" value="true" />
@@ -585,11 +619,19 @@ return console.askYesNo(message, true);
               <group id="1420" beanClass="com.install4j.runtime.beans.groups.VerticalFormComponentGroup" useExternalParametrization="true" externalParametrizationName="Customize title bar" externalParametrizationMode="include">
                 <serializedBean>
                   <property name="backgroundColor">
-                    <object class="java.awt.Color">
-                      <int>255</int>
-                      <int>255</int>
-                      <int>255</int>
-                      <int>255</int>
+                    <object class="com.install4j.runtime.beans.LightOrDarkColor">
+                      <object class="java.awt.Color">
+                        <int>255</int>
+                        <int>255</int>
+                        <int>255</int>
+                        <int>255</int>
+                      </object>
+                      <object class="java.awt.Color">
+                        <int>49</int>
+                        <int>52</int>
+                        <int>53</int>
+                        <int>255</int>
+                      </object>
                     </object>
                   </property>
                   <property name="borderSides">
@@ -706,6 +748,7 @@ return console.askYesNo(message, true);
         <entry location="bin/openfire.sh" />
         <entry location="bin/openfirectl" />
       </exclude>
+      <jreBundle jreBundleSource="none" />
     </windows>
     <unixArchive name="Unix Archive" id="30" installDir="${compiler:PRODUCT_NAME}" overridePrincipalLanguage="true">
       <excludedLaunchers>
@@ -719,6 +762,7 @@ return console.askYesNo(message, true);
         <entry location="bin/openfire.bat" />
         <entry location="bin/openfire-dev.bat" />
       </exclude>
+      <jreBundle jreBundleSource="none" />
     </unixArchive>
     <windowsArchive name="Windows Archive" id="31" installDir="${compiler:APP_SHORT_NAME}" overridePrincipalLanguage="true" jreBitType="32">
       <excludedLaunchers>
@@ -734,6 +778,7 @@ return console.askYesNo(message, true);
         <entry location="bin/openfire.sh" />
         <entry location="bin/openfirectl" />
       </exclude>
+      <jreBundle jreBundleSource="none" />
     </windowsArchive>
     <windows name="Windows x64" id="1354" mediaFileName="${compiler:FILE_PREFIX}_${compiler:sys.version}_x64" installDir="${compiler:WINDOWS_INSTALL_DIR}" overridePrincipalLanguage="true">
       <excludedLaunchers>
@@ -749,38 +794,7 @@ return console.askYesNo(message, true);
         <entry location="bin/openfire.sh" />
         <entry location="bin/openfirectl" />
       </exclude>
-    </windows>
-    <windows name="Windows Bundled JRE x86" id="1394" mediaFileName="${compiler:FILE_PREFIX}_${compiler:sys.version}_bundledJRE" installDir="${compiler:WINDOWS_INSTALL_DIR}" overridePrincipalLanguage="true" jreBitType="32">
-      <excludedLaunchers>
-        <launcher id="22" />
-      </excludedLaunchers>
-      <exclude>
-        <entry rootId="1568" />
-        <entry location="bin/extra/redhat" />
-        <entry location="bin/extra/embedded-db-viewer.sh" />
-        <entry location="bin/extra/openfired" />
-        <entry location="bin/extra/openfire-launchd-wrapper.sh" />
-        <entry location="bin/extra/redhat-postinstall.sh" />
-        <entry location="bin/openfire.sh" />
-        <entry location="bin/openfirectl" />
-      </exclude>
-      <jreBundle jreBundleSource="preCreated" includedJre="windows-x86-1.8.0_202" />
-    </windows>
-    <windows name="Windows Bundled JRE x64" id="1396" mediaFileName="${compiler:FILE_PREFIX}_${compiler:sys.version}_bundledJRE_x64" installDir="${compiler:WINDOWS_INSTALL_DIR}" overridePrincipalLanguage="true">
-      <excludedLaunchers>
-        <launcher id="22" />
-      </excludedLaunchers>
-      <exclude>
-        <entry rootId="1568" />
-        <entry location="bin/extra/redhat" />
-        <entry location="bin/extra/embedded-db-viewer.sh" />
-        <entry location="bin/extra/openfired" />
-        <entry location="bin/extra/openfire-launchd-wrapper.sh" />
-        <entry location="bin/extra/redhat-postinstall.sh" />
-        <entry location="bin/openfire.sh" />
-        <entry location="bin/openfirectl" />
-      </exclude>
-      <jreBundle jreBundleSource="preCreated" includedJre="windows-amd64-1.8.0_202" />
+      <jreBundle jreBundleSource="none" />
     </windows>
   </mediaSets>
   <buildIds>

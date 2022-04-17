@@ -17,7 +17,6 @@
 package org.jivesoftware.openfire.muc.spi;
 
 import org.jivesoftware.database.DbConnectionManager;
-import org.jivesoftware.openfire.PacketRouter;
 import org.jivesoftware.openfire.XMPPServer;
 import org.jivesoftware.openfire.group.GroupJID;
 import org.jivesoftware.openfire.muc.*;
@@ -189,6 +188,7 @@ public class MUCPersistenceManager {
      * @return A room number count
      */
     public static int countRooms(MultiUserChatService service) {
+        Log.debug("Counting rooms for service '{}' in the database.", service.getServiceName());
         Connection con = null;
         PreparedStatement pstmt = null;
         ResultSet rs = null;
@@ -216,7 +216,8 @@ public class MUCPersistenceManager {
      * 
      * @param room the room to load from the database if persistent
      */
-    public static void loadFromDB(LocalMUCRoom room) {
+    public static void loadFromDB(MUCRoom room) {
+        Log.debug("Attempting to load room '{}' from the database.", room.getName());
         Connection con = null;
         PreparedStatement pstmt = null;
         ResultSet rs = null;
@@ -402,7 +403,8 @@ public class MUCPersistenceManager {
      * 
      * @param room The room to save its configuration.
      */
-    public static void saveToDB(LocalMUCRoom room) {
+    public static void saveToDB(MUCRoom room) {
+        Log.debug("Attempting to save room '{}' to the database.", room.getName());
         Connection con = null;
         PreparedStatement pstmt = null;
         try {
@@ -530,6 +532,8 @@ public class MUCPersistenceManager {
      * @param room the room to remove from the database.
      */
     public static void deleteFromDB(MUCRoom room) {
+        Log.debug("Attempting to delete room '{}' from the database.", room.getName());
+
         if (!room.isPersistent() || !room.wasSavedToDB()) {
             return;
         }
@@ -572,7 +576,7 @@ public class MUCPersistenceManager {
      * @return a collection with all room names.
      */
     public static Collection<String> loadRoomNamesFromDB(MultiUserChatService chatserver) {
-        Log.debug( "Loading room names for chat service {}", chatserver.getServiceName() );
+        Log.debug("Loading room names for chat service {}", chatserver.getServiceName());
         Long serviceID = XMPPServer.getInstance().getMultiUserChatManager().getMultiUserChatServiceID(chatserver.getServiceName());
 
         final Set<String> names = new HashSet<>();
@@ -612,16 +616,15 @@ public class MUCPersistenceManager {
      *
      * @param chatserver the chat server that will hold the loaded rooms.
      * @param cleanupDate rooms that hadn't been used after this date won't be loaded.
-     * @param packetRouter the PacketRouter that loaded rooms will use to send packets.
      * @return a collection with all the persistent rooms.
      */
-    public static Collection<LocalMUCRoom> loadRoomsFromDB(MultiUserChatService chatserver, Date cleanupDate, PacketRouter packetRouter) {
+    public static Collection<MUCRoom> loadRoomsFromDB(MultiUserChatService chatserver, Date cleanupDate) {
         Log.debug( "Loading rooms for chat service {}", chatserver.getServiceName() );
         Long serviceID = XMPPServer.getInstance().getMultiUserChatManager().getMultiUserChatServiceID(chatserver.getServiceName());
 
-        final Map<Long, LocalMUCRoom> rooms;
+        final Map<Long, MUCRoom> rooms;
         try {
-            rooms = loadRooms(serviceID, cleanupDate, chatserver, packetRouter);
+            rooms = loadRooms(serviceID, cleanupDate, chatserver);
             loadHistory(serviceID, rooms);
             loadAffiliations(serviceID, rooms);
             loadMembers(serviceID, rooms);
@@ -647,8 +650,8 @@ public class MUCPersistenceManager {
         return rooms.values();
     }
 
-    private static Map<Long, LocalMUCRoom> loadRooms(Long serviceID, Date cleanupDate, MultiUserChatService chatserver, PacketRouter packetRouter) throws SQLException {
-        final Map<Long, LocalMUCRoom> rooms = new HashMap<>();
+    private static Map<Long, MUCRoom> loadRooms(Long serviceID, Date cleanupDate, MultiUserChatService chatserver) throws SQLException {
+        final Map<Long, MUCRoom> rooms = new HashMap<>();
 
         Connection connection = null;
         PreparedStatement statement = null;
@@ -670,7 +673,7 @@ public class MUCPersistenceManager {
 
             while (resultSet.next()) {
                 try {
-                    LocalMUCRoom room = new LocalMUCRoom(chatserver, resultSet.getString("name"), packetRouter);
+                    MUCRoom room = new MUCRoom(chatserver, resultSet.getString("name"));
                     room.setID(resultSet.getLong("roomID"));
                     room.setCreationDate(new Date(Long.parseLong(resultSet.getString("creationDate").trim())));
                     room.setModificationDate(new Date(Long.parseLong(resultSet.getString("modificationDate").trim())));
@@ -758,7 +761,7 @@ public class MUCPersistenceManager {
         return rooms;
     }
 
-    private static void loadHistory(Long serviceID, Map<Long, LocalMUCRoom> rooms) throws SQLException {
+    private static void loadHistory(Long serviceID, Map<Long, MUCRoom> rooms) throws SQLException {
         Connection connection = null;
         PreparedStatement statement = null;
         ResultSet resultSet = null;
@@ -781,7 +784,7 @@ public class MUCPersistenceManager {
 
             while (resultSet.next()) {
                 try {
-                    LocalMUCRoom room = rooms.get(resultSet.getLong("roomID"));
+                    MUCRoom room = rooms.get(resultSet.getLong("roomID"));
                     // Skip to the next position if the room does not exist or if history is disabled
                     if (room == null || !room.isLogEnabled()) {
                         continue;
@@ -819,7 +822,7 @@ public class MUCPersistenceManager {
         }
     }
 
-    private static void loadAffiliations(Long serviceID, Map<Long, LocalMUCRoom> rooms) throws SQLException {
+    private static void loadAffiliations(Long serviceID, Map<Long, MUCRoom> rooms) throws SQLException {
         Connection connection = null;
         PreparedStatement statement = null;
         ResultSet resultSet = null;
@@ -832,7 +835,7 @@ public class MUCPersistenceManager {
             while (resultSet.next()) {
                 try {
                     long roomID = resultSet.getLong("roomID");
-                    LocalMUCRoom room = rooms.get(roomID);
+                    MUCRoom room = rooms.get(roomID);
                     // Skip to the next position if the room does not exist
                     if (room == null) {
                         continue;
@@ -880,7 +883,7 @@ public class MUCPersistenceManager {
         }
     }
 
-    private static void loadMembers(Long serviceID, Map<Long, LocalMUCRoom> rooms) throws SQLException {
+    private static void loadMembers(Long serviceID, Map<Long, MUCRoom> rooms) throws SQLException {
         Connection connection = null;
         PreparedStatement statement = null;
         ResultSet resultSet = null;
@@ -893,7 +896,7 @@ public class MUCPersistenceManager {
 
             while (resultSet.next()) {
                 try {
-                    LocalMUCRoom room = rooms.get(resultSet.getLong("roomID"));
+                    MUCRoom room = rooms.get(resultSet.getLong("roomID"));
                     // Skip to the next position if the room does not exist
                     if (room == null) {
                         continue;
@@ -946,7 +949,7 @@ public class MUCPersistenceManager {
      *
      * @param room the room to update its lock status in the database.
      */
-    public static void updateRoomLock(LocalMUCRoom room) {
+    public static void updateRoomLock(MUCRoom room) {
         if (!room.isPersistent() || !room.wasSavedToDB()) {
             return;
         }
@@ -1012,7 +1015,7 @@ public class MUCPersistenceManager {
      * @param oldAffiliation the previous affiliation of the user in the room.
      */
     public static void saveAffiliationToDB(MUCRoom room, JID jid, String nickname,
-            MUCRole.Affiliation newAffiliation, MUCRole.Affiliation oldAffiliation)
+                                           MUCRole.Affiliation newAffiliation, MUCRole.Affiliation oldAffiliation)
     {
         final String affiliationJid = jid.toBareJID();
         if (!room.isPersistent() || !room.wasSavedToDB()) {
@@ -1166,7 +1169,7 @@ public class MUCPersistenceManager {
      * @param oldAffiliation the previous affiliation of the user in the room.
      */
     public static void removeAffiliationFromDB(MUCRoom room, JID jid,
-            MUCRole.Affiliation oldAffiliation)
+                                               MUCRole.Affiliation oldAffiliation)
     {
         final String affiliationJID = jid.toBareJID();
         if (room.isPersistent() && room.wasSavedToDB()) {

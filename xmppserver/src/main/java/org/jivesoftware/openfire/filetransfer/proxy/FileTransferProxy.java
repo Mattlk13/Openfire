@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 1999-2008 Jive Software. All rights reserved.
+ * Copyright (C) 1999-2008 Jive Software, 2022 Ignite Realtime Foundation. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,27 +16,12 @@
 
 package org.jivesoftware.openfire.filetransfer.proxy;
 
-import java.net.InetAddress;
-import java.net.NetworkInterface;
-import java.net.SocketException;
-import java.net.UnknownHostException;
-import java.util.*;
-
 import org.dom4j.DocumentHelper;
 import org.dom4j.Element;
-import org.jivesoftware.openfire.IQHandlerInfo;
-import org.jivesoftware.openfire.PacketException;
-import org.jivesoftware.openfire.PacketRouter;
-import org.jivesoftware.openfire.RoutableChannelHandler;
-import org.jivesoftware.openfire.RoutingTable;
-import org.jivesoftware.openfire.XMPPServer;
+import org.jivesoftware.openfire.*;
 import org.jivesoftware.openfire.auth.UnauthorizedException;
 import org.jivesoftware.openfire.container.BasicModule;
-import org.jivesoftware.openfire.disco.DiscoInfoProvider;
-import org.jivesoftware.openfire.disco.DiscoItem;
-import org.jivesoftware.openfire.disco.DiscoItemsProvider;
-import org.jivesoftware.openfire.disco.DiscoServerItem;
-import org.jivesoftware.openfire.disco.ServerItemsProvider;
+import org.jivesoftware.openfire.disco.*;
 import org.jivesoftware.openfire.filetransfer.FileTransferManager;
 import org.jivesoftware.util.JiveGlobals;
 import org.jivesoftware.util.PropertyEventDispatcher;
@@ -48,6 +33,12 @@ import org.xmpp.packet.IQ;
 import org.xmpp.packet.JID;
 import org.xmpp.packet.Packet;
 import org.xmpp.packet.PacketError;
+
+import java.net.InetAddress;
+import java.net.NetworkInterface;
+import java.net.SocketException;
+import java.net.UnknownHostException;
+import java.util.*;
 
 /**
  * Manages the transfering of files between two remote entities on the jabber network.
@@ -380,11 +371,6 @@ public class FileTransferProxy extends BasicModule
     }
 
     @Override
-    public DataForm getExtendedInfo(String name, String node, JID senderJID) {
-        return null;
-    }
-
-    @Override
     public Set<DataForm> getExtendedInfos(String name, String node, JID senderJID) {
         return new HashSet<DataForm>();
     }
@@ -404,12 +390,10 @@ public class FileTransferProxy extends BasicModule
     public void process(Packet packet) throws UnauthorizedException, PacketException {
         // Check if the packet is a disco request or a packet with namespace iq:register
         if (packet instanceof IQ) {
-            if (handleIQ((IQ) packet)) {
-                // Do nothing
-            }
-            else {
-                IQ reply = IQ.createResultIQ((IQ) packet);
-                reply.setChildElement(((IQ) packet).getChildElement().createCopy());
+            final IQ iq = (IQ) packet;
+            if (!handleIQ(iq) && iq.isRequest()) {
+                IQ reply = IQ.createResultIQ(iq);
+                reply.setChildElement(iq.getChildElement().createCopy());
                 reply.setError(PacketError.Condition.feature_not_implemented);
                 router.route(reply);
             }

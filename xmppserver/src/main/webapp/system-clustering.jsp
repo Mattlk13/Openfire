@@ -58,7 +58,7 @@
 <head>
 <title><fmt:message key="system.clustering.title"/></title>
 <meta name="pageID" content="system-clustering"/>
-<style type="text/css">
+<style>
 .jive-contentBox .local {
     background-color: #ffc;
     }
@@ -199,23 +199,20 @@
         percentage = outgoing == 0 ? 0 : current * 100 / outgoing;
         statsMap.put(GetBasicStatistics.OUTGOING, current + " (" + Math.round(percentage) + "%)");
     }
-    // Note; if any one node in the cluster does not have the GetClusterVersions task, running
-    // CacheFactory.doSynchronousClusterTask() on all nodes will return an empty collection. For
-    // that reason, run the task on each node individually.
+
+    final Map<String, Map<NodeID, String>> allPluginVersions = ClusterManager.getPluginAndOpenfireVersions();
     final Table<String, NodeID, String> pluginVersions = HashBasedTable.create();
     final Set<String> plugins = new TreeSet<>();
     clusterNodesInfo.forEach(clusterNodeInfo -> {
         final NodeID nodeID = clusterNodeInfo.getNodeID();
-        final GetClusteredVersions clusteredVersions = CacheFactory.doSynchronousClusterTask(
-            new GetClusteredVersions(), nodeID.toByteArray());
-        if (clusteredVersions != null) {
-            pluginVersions.put("Openfire", nodeID, clusteredVersions.getOpenfireVersion());
-            clusteredVersions.getPluginVersions().forEach((pluginName, pluginVersion) -> {
-                plugins.add(pluginName);
-                pluginVersions.put(pluginName, nodeID, pluginVersion);
-            });
-        }
+        pluginVersions.put("Openfire", nodeID, allPluginVersions.get("Openfire").get(nodeID));
+        allPluginVersions.forEach((pluginName, value) -> {
+            final String pluginVersion = value.get(nodeID);
+            plugins.add(pluginName);
+            pluginVersions.put(pluginName, nodeID, pluginVersion == null ? "-" : pluginVersion);
+        });
     });
+
     pageContext.setAttribute("localNodeID", XMPPServer.getInstance().getNodeID());
     pageContext.setAttribute("pluginVersions", pluginVersions);
     pageContext.setAttribute("plugins", plugins);
@@ -512,20 +509,22 @@
                 </c:forEach>
             </tr>
             <c:forEach items="${plugins}" var="plugin">
-                <tr style="vertical-align:middle">
-                    <th style="width: 1%">
-                        <c:out value="${plugin}"/>
-                    </th>
-                    <c:forEach items="${clusterNodesInfo}" var="clusterNodeInfo">
-                        <td class="jive-description <c:if test="${localNodeID == clusterNodeInfo.nodeID}">local</c:if>"
-                            style="width: 1%">
-                            <c:out value="${pluginVersions.get(plugin, clusterNodeInfo.nodeID)}"/>
-                            <c:if test="${pluginVersions.get(plugin, localNodeID) != pluginVersions.get(plugin, clusterNodeInfo.nodeID)}">
-                                <img src="images/warning-16x16.gif" width="16" height="16" alt="Warning">
-                            </c:if>
-                        </td>
-                    </c:forEach>
-                </tr>
+                <c:if test="${!'Openfire'.equals(plugin)}">
+                    <tr style="vertical-align:middle">
+                        <th style="width: 1%">
+                            <c:out value="${plugin}"/>
+                        </th>
+                        <c:forEach items="${clusterNodesInfo}" var="clusterNodeInfo">
+                            <td class="jive-description <c:if test="${localNodeID == clusterNodeInfo.nodeID}">local</c:if>"
+                                style="width: 1%">
+                                <c:out value="${pluginVersions.get(plugin, clusterNodeInfo.nodeID)}"/>
+                                <c:if test="${pluginVersions.get(plugin, localNodeID) != pluginVersions.get(plugin, clusterNodeInfo.nodeID)}">
+                                    <img src="images/warning-16x16.gif" width="16" height="16" alt="Warning">
+                                </c:if>
+                            </td>
+                        </c:forEach>
+                    </tr>
+                </c:if>
             </c:forEach>
             </tbody>
         </table>

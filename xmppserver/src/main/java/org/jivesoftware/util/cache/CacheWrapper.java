@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2004-2008 Jive Software. All rights reserved.
+ * Copyright (C) 2004-2008 Jive Software, 2022 Ignite Realtime Foundation. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,6 +15,9 @@
  */
 package org.jivesoftware.util.cache;
 
+import org.jivesoftware.openfire.cluster.ClusteredCacheEntryListener;
+
+import javax.annotation.Nonnull;
 import java.io.Serializable;
 import java.util.Collection;
 import java.util.Collections;
@@ -59,11 +62,6 @@ public class CacheWrapper<K extends Serializable, V extends Serializable> implem
     }
 
     @Override
-    public void setMaxCacheSize(final int maxSize) {
-        cache.setMaxCacheSize(maxSize);
-    }
-
-    @Override
     public void setMaxCacheSize(long maxSize){
         cache.setMaxCacheSize(maxSize);
     }
@@ -76,11 +74,6 @@ public class CacheWrapper<K extends Serializable, V extends Serializable> implem
     @Override
     public void setMaxLifetime(final long maxLifetime) {
         cache.setMaxLifetime(maxLifetime);
-    }
-
-    @Override
-    public int getCacheSize() {
-        return cache.getCacheSize();
     }
 
     public long getLongCacheSize(){
@@ -157,4 +150,13 @@ public class CacheWrapper<K extends Serializable, V extends Serializable> implem
         return cache.put(key, value);
     }
 
+    @Override
+    public String addClusteredCacheEntryListener(@Nonnull final ClusteredCacheEntryListener<K, V> listener, final boolean includeValues, final boolean includeEventsFromLocalNode) {
+        return cache.addClusteredCacheEntryListener(listener, includeValues, includeEventsFromLocalNode);
+    }
+
+    @Override
+    public void removeClusteredCacheEntryListener(@Nonnull final String listenerId) {
+        cache.removeClusteredCacheEntryListener(listenerId);
+    }
 }

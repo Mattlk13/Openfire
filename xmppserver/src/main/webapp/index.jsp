@@ -2,7 +2,7 @@
 <%--
 <%--
   -
-  - Copyright (C) 2004-2008 Jive Software. All rights reserved.
+  - Copyright (C) 2004-2008 Jive Software, 2022 Ignite Realtime Foundation. All rights reserved.
   -
   - Licensed under the Apache License, Version 2.0 (the "License");
   - you may not use this file except in compliance with the License.
@@ -23,7 +23,6 @@
 <%@ page import="org.jivesoftware.openfire.XMPPServer" %>
 <%@ page import="org.jivesoftware.openfire.container.AdminConsolePlugin" %>
 <%@ page import="org.jivesoftware.openfire.filetransfer.proxy.FileTransferProxy" %>
-<%@ page import="org.jivesoftware.openfire.http.HttpBindManager" %>
 <%@ page import="org.jivesoftware.openfire.keystore.IdentityStore" %>
 <%@ page import="org.jivesoftware.openfire.mediaproxy.MediaProxyService" %>
 <%@ page import="org.jivesoftware.openfire.spi.ConnectionListener" %>
@@ -35,9 +34,7 @@
 <%@ page import="org.jivesoftware.util.LocaleUtils" %>
 <%@ page import="org.jivesoftware.util.StringUtils" %>
 <%@ page import="org.slf4j.LoggerFactory" %>
-<%@ page import="java.net.URL" %>
 <%@ page import="java.text.DecimalFormat" %>
-<%@ page import="java.util.Arrays" %>
 <%@ page import="java.util.List" %>
 <%@ page import="org.jivesoftware.openfire.net.DNSUtil" %>
 <%@ page import="org.xmpp.packet.JID" %>
@@ -54,6 +51,7 @@
 <%@ page import="com.rometools.rome.feed.synd.SyndFeed" %>
 <%@ page import="com.rometools.rome.feed.synd.SyndEntry" %>
 <%@ page import="java.io.InputStreamReader" %>
+<%@ page import="org.jivesoftware.util.MemoryUsageMonitor" %>
 
 <%@ taglib uri="http://java.sun.com/jsp/jstl/core" prefix="c" %>
 <%@ taglib uri="http://java.sun.com/jsp/jstl/fmt" prefix="fmt" %>
@@ -88,10 +86,11 @@
             (AdminConsolePlugin) XMPPServer.getInstance().getPluginManager().getPlugin("admin");
 
     FileTransferProxy fileTransferProxy = XMPPServer.getInstance().getFileTransferProxy();
-    HttpBindManager httpBindManager = HttpBindManager.getInstance();
     MediaProxyService mediaProxyService = XMPPServer.getInstance().getMediaProxyService();
 
     boolean rssEnabled = JiveGlobals.getBooleanProperty("rss.enabled", true);
+
+    pageContext.setAttribute("memoryUsageAfterLastGC", MemoryUsageMonitor.getInstance().getMemoryUsageAfterLastGC());
 %>
 
 <html>
@@ -131,7 +130,7 @@
         <br>
     </c:if>
 
-<style type="text/css">
+<style>
 .bar TD {
     padding : 0;
 }
@@ -346,20 +345,6 @@
             <tr>
                 <td class="c1"><fmt:message key="index.memory" /></td>
                 <td>
-                <%    // The java runtime
-                    Runtime runtime = Runtime.getRuntime();
-
-                    double freeMemory = (double)runtime.freeMemory()/(1024*1024);
-                    double maxMemory = (double)runtime.maxMemory()/(1024*1024);
-                    double totalMemory = (double)runtime.totalMemory()/(1024*1024);
-                    double usedMemory = totalMemory - freeMemory;
-                    double percentFree = ((maxMemory - usedMemory)/maxMemory)*100.0;
-                    double percentUsed = 100 - percentFree;
-                    int percent = 100-(int)Math.round(percentFree);
-
-                    DecimalFormat mbFormat = new DecimalFormat("#0.00");
-                    DecimalFormat percentFormat = new DecimalFormat("#0.0");
-                %>
 
                 <table cellpadding="0" cellspacing="0" border="0" width="300">
                 <tr valign="middle">
@@ -367,33 +352,26 @@
                         <div class="bar">
                         <table cellpadding="0" cellspacing="0" border="0" width="100%" style="border:1px #666 solid;">
                         <tr>
-                            <%  if (percent == 0) { %>
-
-                                <td width="100%"><img src="images/percent-bar-left.gif" width="100%" height="8" border="0" alt=""></td>
-
-                            <%  } else { %>
-
-                                <%  if (percent >= 90) { %>
-
-                                    <td width="<%= percent %>%" background="images/percent-bar-used-high.gif"
-                                        ><img src="images/blank.gif" width="1" height="8" border="0" alt=""></td>
-
-                                <%  } else { %>
-
-                                    <td width="<%= percent %>%" background="images/percent-bar-used-low.gif"
-                                        ><img src="images/blank.gif" width="1" height="8" border="0" alt=""></td>
-
-                                <%  } %>
-                                <td width="<%= (100-percent) %>%" background="images/percent-bar-left.gif"
-                                    ><img src="images/blank.gif" width="1" height="8" border="0" alt=""></td>
-                            <%  } %>
+                            <c:choose>
+                                <c:when test="${memoryUsageAfterLastGC.percent >= 90}">
+                                    <td width="${memoryUsageAfterLastGC.percent}%" background="images/percent-bar-used-high.gif"><img src="images/blank.gif" width="1" height="8" border="0" alt=""></td>
+                                </c:when>
+                                <c:when test="${memoryUsageAfterLastGC.percent > 0}">
+                                    <td width="${memoryUsageAfterLastGC.percent}%" background="images/percent-bar-used-low.gif"><img src="images/blank.gif" width="1" height="8" border="0" alt=""></td>
+                                </c:when>
+                            </c:choose>
+                            <td width="${100 - memoryUsageAfterLastGC.percent}%" background="images/percent-bar-left.gif"><img src="images/blank.gif" width="1" height="8" border="0" alt=""></td>
                         </tr>
                         </table>
                         </div>
                     </td>
                     <td width="1%" nowrap>
                         <div style="padding-left:6px;" class="c2">
-                        <%= mbFormat.format(usedMemory) %> MB of <%= mbFormat.format(maxMemory) %> MB (<%= percentFormat.format(percentUsed) %>%) used
+                            <fmt:message key="index.memory_usage_description">
+                                <fmt:param><fmt:formatNumber type="number" minFractionDigits="2" maxFractionDigits="2" value="${memoryUsageAfterLastGC.usedMemory}"/></fmt:param>
+                                <fmt:param><fmt:formatNumber type="number" minFractionDigits="2" maxFractionDigits="2" value="${memoryUsageAfterLastGC.maximumMemory}"/></fmt:param>
+                                <fmt:param><fmt:formatNumber type="number" minFractionDigits="1" maxFractionDigits="1" value="${memoryUsageAfterLastGC.percentUsed}"/></fmt:param>
+                            </fmt:message>
                         </div>
                     </td>
                 </tr>

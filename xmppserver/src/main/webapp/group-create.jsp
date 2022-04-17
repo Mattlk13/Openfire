@@ -28,6 +28,7 @@
 <%@ page import="java.net.URLEncoder"%>
 <%@ page import="java.util.HashMap"%>
 <%@ page import="java.util.Map" %>
+<%@ page import="org.slf4j.LoggerFactory" %>
 
 <%@ taglib uri="http://java.sun.com/jsp/jstl/core" prefix="c" %>
 <%@ taglib uri="http://java.sun.com/jsp/jstl/fmt" prefix="fmt" %>
@@ -97,7 +98,7 @@
             }
             catch (Exception e) {
                 errors.put("general", "");
-                Log.error(e);
+                LoggerFactory.getLogger("group-create.jsp").warn("Problem creating group '{}' in admin console.", groupName, e);
             }
         }
     }
@@ -127,7 +128,7 @@
             }
             catch (Exception e) {
                 errors.put("general", "");
-                Log.error(e);
+                LoggerFactory.getLogger("group-create.jsp").warn("Problem editing group '{}' in admin console.", groupName, e);
             }
         }
     }
@@ -227,7 +228,7 @@
             <label for="gname"><fmt:message key="group.create.group_name" /></label> *
         </td>
         <td width="99%">
-            <input type="text" name="name" size="30" maxlength="75"
+            <input type="text" name="name" size="30" maxlength="50"
              value="<%= ((name != null) ? StringUtils.escapeForXML(name) : "") %>" id="gname">
         </td>
     </tr>
@@ -252,7 +253,7 @@
             <label for="gdesc"><fmt:message key="group.create.label_description" /></label>
         </td>
         <td width="99%">
-            <textarea name="description" cols="30" rows="3" id="gdesc"
+            <textarea name="description" cols="30" rows="3" maxlength="255" id="gdesc"
              ><%= ((description != null) ? StringUtils.escapeHTMLTags(description) : "") %></textarea>
         </td>
     </tr>
@@ -294,14 +295,14 @@
 
 </form>
 
-<script language="JavaScript" type="text/javascript">
+<script>
 document.f.name.focus();
 </script>
 
 <%  // Disable the form if a read-only user provider.
 if (webManager.getGroupManager().isReadOnly()) { %>
 
-<script language="Javascript" type="text/javascript">
+<script>
   function disable() {
 var limit = document.forms[0].elements.length;
 for (i=0;i<limit;i++) {

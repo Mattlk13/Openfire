@@ -422,11 +422,16 @@ public abstract class LocalSession implements Session {
             // http://xmpp.org/extensions/xep-0016.html#protocol-error
             if (packet instanceof Message) {
                 // For message stanzas, the server SHOULD return an error, which SHOULD be <service-unavailable/>.
+                if (((Message)packet).getType() == Message.Type.error){
+                    Log.debug("Avoid generating an error in response to a stanza that itself is an error (to avoid the chance of entering an endless back-and-forth of exchanging errors). Suppress sending an {} error in response to: {}", PacketError.Condition.service_unavailable, packet);
+                    return;
+                }
                 Message message = (Message) packet;
                 Message result = message.createCopy();
                 result.setTo(message.getFrom());
+                result.setFrom(message.getTo());
                 result.setError(PacketError.Condition.service_unavailable);
-                XMPPServer.getInstance().getRoutingTable().routePacket(message.getFrom(), result, true);
+                XMPPServer.getInstance().getPacketRouter().route(result);
             } else if (packet instanceof IQ) {
                 // For IQ stanzas of type "get" or "set", the server MUST return an error, which SHOULD be <service-unavailable/>.
                 // IQ stanzas of other types MUST be silently dropped by the server.
@@ -434,7 +439,7 @@ public abstract class LocalSession implements Session {
                 if (iq.getType() == IQ.Type.get || iq.getType() == IQ.Type.set) {
                     IQ result = IQ.createResultIQ(iq);
                     result.setError(PacketError.Condition.service_unavailable);
-                    XMPPServer.getInstance().getRoutingTable().routePacket(iq.getFrom(), result, true);
+                    XMPPServer.getInstance().getPacketRouter().route(result);
                 }
             }
         }

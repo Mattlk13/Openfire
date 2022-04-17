@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2005-2008 Jive Software. All rights reserved.
+ * Copyright (C) 2005-2008 Jive Software, 2022 Ignite Realtime Foundation. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -312,10 +312,10 @@ public class Roster implements Cacheable, Externalizable {
             for (String groupDisplayName : groups) {
                 Collection<Group> groupsWithProp = GroupManager
                         .getInstance()
-                        .search("sharedRoster.displayName", groupDisplayName);
+                        .search(Group.SHARED_ROSTER_DISPLAY_NAME_PROPERTY_KEY, groupDisplayName);
                 for ( Group group : groupsWithProp )
                 {
-                    String showInRoster = group.getProperties().get( "sharedRoster.showInRoster" );
+                    String showInRoster = group.getProperties().get(Group.SHARED_ROSTER_SHOW_IN_ROSTER_PROPERTY_KEY);
                     if ( showInRoster != null && !showInRoster.equals( "nobody" ) )
                     {
                         throw new SharedGroupException( "Cannot add an item to a shared group" );
@@ -538,7 +538,7 @@ public class Roster implements Cacheable, Externalizable {
                         getUsername());
             }
             for (Group sharedGroup : item.getSharedGroups()) {
-                String displayName = sharedGroup.getProperties().get("sharedRoster.displayName");
+                String displayName = sharedGroup.getSharedDisplayName();
                 if (displayName != null) {
                     groups.add(displayName);
                 } else {
@@ -600,7 +600,8 @@ public class Roster implements Cacheable, Externalizable {
                     continue;
                 }
                 JID searchNode = new JID(item.getJid().getNode(), item.getJid().getDomain(), null, true);
-                for (JID jid : routingTable.getRoutes(searchNode, null)) {
+                final List<JID> routingTableRoutes = routingTable.getRoutes(searchNode, null);
+                for (JID jid : routingTableRoutes) {
                     try {
                         routingTable.routePacket(jid, packet, false);
                     } catch (Exception e) {
@@ -611,7 +612,8 @@ public class Roster implements Cacheable, Externalizable {
             }
         }
         // Broadcast presence to shared contacts whose subscription status is FROM
-        for (String contact : implicitFrom.keySet()) {
+        final Set<String> implicitFroms = implicitFrom.keySet();
+        for (String contact : implicitFroms) {
             if (contact.contains("@")) {
                 String node = contact.substring(0, contact.lastIndexOf("@"));
                 String domain = contact.substring(contact.lastIndexOf("@") + 1);
@@ -624,7 +626,9 @@ public class Roster implements Cacheable, Externalizable {
                 // Outgoing presence notifications are blocked for this contact
                 continue;
             }
-            for (JID jid : routingTable.getRoutes(new JID(contact), null)) {
+
+            final List<JID> routingTableRoutes = routingTable.getRoutes(new JID(contact), null);
+            for (JID jid : routingTableRoutes) {
                 try {
                     routingTable.routePacket(jid, packet, false);
                 } catch (Exception e) {
@@ -703,7 +707,7 @@ public class Roster implements Cacheable, Externalizable {
         // Set the groups to broadcast (include personal and shared groups)
         List<String> groups = new ArrayList<>(item.getGroups());
         for (Group sharedGroup : item.getSharedGroups()) {
-            String displayName = sharedGroup.getProperties().get("sharedRoster.displayName");
+            String displayName = sharedGroup.getSharedDisplayName();
             if (displayName != null) {
                 groups.add(displayName);
             }

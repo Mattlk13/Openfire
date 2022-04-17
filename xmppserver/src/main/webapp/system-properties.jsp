@@ -14,7 +14,7 @@
     <title><fmt:message key="server.properties.title"/></title>
     <meta name="pageID" content="server-props"/>
     <meta name="helpPage" content="manage_system_properties.html"/>
-    <style type="text/css">
+    <style>
         .nameColumn {
             text-overflow: ellipsis;
             overflow: hidden;
@@ -82,6 +82,7 @@
             <th nowrap><label for="searchPlugin"><fmt:message key="server.properties.plugin"/></label></th>
             <th nowrap><label for="searchDescription"><fmt:message key="server.properties.description"/></label></th>
             <th nowrap><label for="searchDynamic"><fmt:message key="server.properties.dynamic"/></label></th>
+            <th nowrap><label for="searchSetByUser"><fmt:message key="server.properties.setbyuser"/></label></th>
             <th style="text-align:center;"><fmt:message key="server.properties.edit"/></th>
             <th style="text-align:center;"><fmt:message key="server.properties.encrypt"/></th>
             <th style="text-align:center;"><fmt:message key="global.delete"/></th>
@@ -152,6 +153,14 @@
                     <option value="unknown" <c:if test="${search.dynamic == 'unknown'}">selected</c:if>><fmt:message key="server.properties.default.unknown"/></option>
                 </select>
             </td>
+            <td nowrap style="text-align: center">
+                <select id="searchSetByUser" onchange="submitForm();">
+                    <option value="" <c:if test="${search.setByUser == ''}">selected</c:if>><fmt:message key="server.properties.search_all"/></option>
+                    <option value="true" <c:if test="${search.setByUser == 'true'}">selected</c:if>><fmt:message key="server.properties.setbyuser.search.true"/></option>
+                    <option value="false" <c:if test="${search.setByUser == 'false'}">selected</c:if>><fmt:message key="server.properties.setbyuser.search.false"/></option>
+                </select>
+            </td>
+
             <td nowrap>
 
             </td>
@@ -217,13 +226,23 @@
                                 <img src="images/check-16x16.gif" width="16" height="16" alt="<fmt:message key="server.properties.alt_dynamic"/>">
                             </c:when>
                             <c:when test="${!property.dynamic}">
-                                <img src="images/delete-16x16.gif" width="16" height="16" alt="<fmt:message key="server.properties.alt_static"/>">
+                                <img src="images/orange-dash_16x16.gif" width="16" height="16" alt="<fmt:message key="server.properties.alt_static"/>">
                                 <c:if test="${property.restartRequired}">
                                     <img src="images/icon_warning-small.gif" width="16" height="16" alt="<fmt:message key="server.properties.alt_restart-required"/>">
                                 </c:if>
                             </c:when>
                         </c:choose>
                     </c:if>
+                </td>
+                <td style="text-align:center">
+                    <c:choose>
+                        <c:when test="${property.setByUser}">
+                            <img src="images/check-16x16.gif" width="16" height="16" alt="<fmt:message key="server.properties.alt_setbyuser"/>">
+                        </c:when>
+                        <c:otherwise>
+                            <img src="images/orange-dash_16x16.gif" width="16" height="16" alt="<fmt:message key="server.properties.alt_default"/>">
+                        </c:otherwise>
+                    </c:choose>
                 </td>
                 <td style="text-align:center">
                     <img class="clickable"
@@ -295,6 +314,16 @@ ${listPager.jumpToPageForm}
         </tr>
         <tr valign="top">
             <td>
+                <label for="defaultPropertyValue">
+                    <fmt:message key="server.properties.default"/>:
+                </label>
+            </td>
+            <td>
+                <span id="defaultPropertyValue"></span>
+            </td>
+        </tr>
+        <tr valign="top">
+            <td>
                 <fmt:message key="server.properties.encryption"/>:
             </td>
             <td>
@@ -334,7 +363,7 @@ ${listPager.jumpToPageForm}
     <input type="hidden" name="encrypt">
 </form>
 
-<script type="text/javascript">
+<script>
     ${listPager.pageFunctions}
 
     function getKey(imgObject) {
@@ -349,6 +378,10 @@ ${listPager.jumpToPageForm}
         } else {
             valueField.value = imgObject.parentNode.parentNode.childNodes[3].childNodes[1].textContent;
         }
+
+        var defaultValueField = document.getElementById("defaultPropertyValue");
+        defaultValueField.innerText = imgObject.parentNode.parentNode.childNodes[5].childNodes[0].textContent.trim();
+
         document.getElementById(encrypted ? "editPropertyEncryptTrue" : "editPropertyEncryptFalse").checked = true;
         document.getElementById("newPropertyTitle").style.display = "none";
         document.getElementById("editPropertyTitle").style.display = "";

@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2005-2008 Jive Software. All rights reserved.
+ * Copyright (C) 2005-2008 Jive Software, 2022 Ignite Realtime Foundation. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -30,7 +30,9 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.locks.Lock;
 
 /**
  * An AdHocCommandManager is responsible for keeping the list of available commands offered
@@ -47,17 +49,17 @@ public class AdHocCommandManager {
      * Map that holds the offered commands by this service. Note: Key=commandCode, Value=command.
      * commandCode matches the node attribute sent by command requesters.
      */
-    private Map<String, AdHocCommand> commands = new ConcurrentHashMap<>();
+    private final Map<String, AdHocCommand> commands = new ConcurrentHashMap<>();
     /**
      * Map that holds the number of command sessions of each requester.
      * Note: Key=requester full's JID, Value=number of sessions
      */
-    private Map<String, AtomicInteger> sessionsCounter = new ConcurrentHashMap<>();
+    private final ConcurrentMap<String, AtomicInteger> sessionsCounter = new ConcurrentHashMap<>();
     /**
      * Map that holds the command sessions. Used mainly to quickly locate a SessionData.
      * Note: Key=sessionID, Value=SessionData
      */
-    private Map<String, SessionData> sessions = new ConcurrentHashMap<>();
+    private final Map<String, SessionData> sessions = new ConcurrentHashMap<>();
 
     /**
      * Adds a new command to the list of supported ad-hoc commands by this server. The new
@@ -150,18 +152,10 @@ public class AdHocCommandManager {
                 }
                 else {
                     // The command requires user interactions (ie. has stages)
-                    // Check that the user has not excedded the limit of allowed simultaneous
+                    // Check that the user has not exceeded the limit of allowed simultaneous
                     // command sessions.
-                    AtomicInteger counter = sessionsCounter.get(from);
-                    if (counter == null) {
-                        synchronized (from.intern()) {
-                            counter = sessionsCounter.get(from);
-                            if (counter == null) {
-                                counter = new AtomicInteger(0);
-                                sessionsCounter.put(from, counter);
-                            }
-                        }
-                    }
+                    AtomicInteger counter = sessionsCounter.computeIfAbsent(from, e->new AtomicInteger(0));
+
                     int limit = JiveGlobals.getIntProperty("xmpp.command.limit", 100);
                     if (counter.incrementAndGet() > limit) {
                         counter.decrementAndGet();
@@ -212,7 +206,9 @@ public class AdHocCommandManager {
                 return reply;
             }
 
-            synchronized (sessionid.intern()) {
+            final Lock lock = session.getLock();
+            lock.lock();
+            try {
                 // Check if the user is requesting to cancel the command
                 if (AdHocCommand.Action.cancel.name().equals(action)) {
                     // User requested to cancel command execution so remove the session data
@@ -270,6 +266,8 @@ public class AdHocCommandManager {
                     // Command has been executed so remove the session data
                     removeSessionData(sessionid, from);
                 }
+            } finally {
+                lock.unlock();
             }
         }
         return reply;
@@ -305,10 +303,14 @@ public class AdHocCommandManager {
      */
     private void removeSessionData(String sessionid, String from) {
         sessions.remove(sessionid);
-        if (sessionsCounter.get(from).decrementAndGet() <= 0) {
-            // Remove the AtomicInteger when no commands are being executed
-            sessionsCounter.remove(from);
-        }
+        sessionsCounter.computeIfPresent(from, (key, count) -> {
+            if (count.decrementAndGet() <= 0) {
+                // Remove the AtomicInteger when no commands are being executed
+                return null;
+            } else {
+                return count;
+            }
+        });
     }
 
     public void stop() {

@@ -27,6 +27,8 @@
 <%@ page import="java.util.HashMap"%><%@ page import="org.xmpp.packet.JID"%>
 <%@ page import="org.jivesoftware.openfire.security.SecurityAuditManager" %>
 <%@ page import="org.jivesoftware.openfire.admin.AdminManager" %>
+<%@ page import="org.jivesoftware.openfire.group.GroupNotFoundException" %>
+<%@ page import="org.slf4j.LoggerFactory" %>
 
 <%@ taglib uri="http://java.sun.com/jsp/jstl/core" prefix="c" %>
 <%@ taglib uri="http://java.sun.com/jsp/jstl/fmt" prefix="fmt" %>
@@ -44,6 +46,7 @@
     String password = ParamUtils.getParameter(request,"password");
     String passwordConfirm = ParamUtils.getParameter(request,"passwordConfirm");
     boolean isAdmin = ParamUtils.getBooleanParameter(request,"isadmin");
+    String group = ParamUtils.getParameter(request,"group");
     Cookie csrfCookie = CookieUtils.getCookie(request, "csrf");
     String csrfParam = ParamUtils.getParameter(request, "csrf");
 
@@ -105,6 +108,15 @@
             }
         }
 
+        //If a group name is entered and there is no matching group, add an error
+        if (group != null && !group.trim().isEmpty()){
+            try{
+                webManager.getGroupManager().getGroup(group);
+            } catch (GroupNotFoundException e){
+                errors.put("groupNotFound","");
+            }
+        }
+
         // do a create if there were no errors
         if (errors.size() == 0) {
             try {
@@ -125,6 +137,15 @@
                     webManager.logEvent("created new user "+username, "name = "+name+", email = "+email+", admin = "+isAdmin);
                 }
 
+                if (group != null && !group.trim().isEmpty()){
+                    webManager.getGroupManager().getGroup(group).getMembers().add(webManager.getXMPPServer().createJID(username, null));
+                }
+
+                if (!SecurityAuditManager.getSecurityAuditProvider().blockGroupEvents()) {
+                    // Log the event
+                    webManager.logEvent("added group member to " + group, "username = " + username);
+                }
+
                 // Successful, so redirect
                 if (another) {
                     response.sendRedirect("user-create.jsp?success=true");
@@ -140,7 +161,7 @@
             }
             catch (Exception e) {
                 errors.put("general","");
-                Log.error(e);
+                LoggerFactory.getLogger("user-create.jsp").error("Unexpected error while creating user '{}' in admin console.", username, e);
             }
         }
     }
@@ -190,7 +211,9 @@
                 <fmt:message key="user.create.invalid_match_password" />
             <% } else if (errors.get("passwordConfirm") != null) { %>
                 <fmt:message key="user.create.invalid_password_confirm" />
-            <% } %>
+            <% } else if (errors.get("groupNotFound")!= null){%>
+                <fmt:message key="user.create.invalid_group" />
+            <% }%>
             </td>
         </tr>
     </tbody>
@@ -273,6 +296,17 @@
             </td>
         </tr>
         <% } %>
+        <% if (!webManager.getGroupManager().getGroups().isEmpty()){%>
+        <tr>
+            <td class="c1">
+                <label for="grouptf"><fmt:message key="user.create.group"/>:</label>
+            </td>
+            <td width="99%">
+                <input type="text" name="group" size="30" maxlength="75" value="<%= ((group!=null) ? StringUtils.escapeForXML(group) : "") %>"
+                       id="grouptf">
+            </td>
+        </tr>
+        <%} %>
         <tr>
 
             <td colspan="2" style="padding-top: 10px;">
@@ -292,14 +326,14 @@
 
 </form>
 
-<script language="JavaScript" type="text/javascript">
+<script>
 document.f.username.focus();
 </script>
 
 <%  // Disable the form if a read-only user provider.
 if (UserManager.getUserProvider().isReadOnly()) { %>
 
-<script language="Javascript" type="text/javascript">
+<script>
   function disable() {
     var limit = document.forms[0].elements.length;
     for (i=0;i<limit;i++) {

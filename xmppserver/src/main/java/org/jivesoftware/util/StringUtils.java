@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2004-2008 Jive Software. All rights reserved.
+ * Copyright (C) 2004-2008 Jive Software, 2022 Ignite Realtime Foundation. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -31,17 +31,9 @@ import java.security.SecureRandom;
 import java.text.BreakIterator;
 import java.text.MessageFormat;
 import java.time.Duration;
-import java.util.ArrayList;
-import java.util.Collection;
-import java.util.Collections;
-import java.util.Date;
-import java.util.List;
-import java.util.Locale;
-import java.util.Map;
-import java.util.Optional;
-import java.util.Random;
-import java.util.StringTokenizer;
+import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentMap;
 
 /**
  * Utility class to perform common String manipulation algorithms.
@@ -61,20 +53,6 @@ public final class StringUtils {
     
     private StringUtils() {
         // Not instantiable.
-    }
-
-    /**
-     * Replaces all instances of oldString with newString in string.
-     *
-     * @param string the String to search to perform replacements on.
-     * @param oldString the String that should be replaced by newString.
-     * @param newString the String that will replace all instances of oldString.
-     * @return a String will all instances of oldString replaced by newString.
-     * @deprecated Use {@link String#replaceAll(String, String)}}
-     */
-    @Deprecated
-    public static String replace(String string, String oldString, String newString) {
-        return replace(string, oldString, newString, new int[1]);
     }
 
     /**
@@ -268,8 +246,7 @@ public final class StringUtils {
     /**
      * Used by the hash method.
      */
-    private static Map<String, MessageDigest> digests =
-            new ConcurrentHashMap<>();
+    private static final ConcurrentMap<String, MessageDigest> digests = new ConcurrentHashMap<>();
 
     /**
      * Hashes a String using the Md5 algorithm and returns the result as a
@@ -354,23 +331,19 @@ public final class StringUtils {
      * @return a hashed version of the passed-in String
      */
     public static String hash(byte[] bytes, String algorithm) {
-        synchronized (algorithm.intern()) {
-            MessageDigest digest = digests.get(algorithm);
-            if (digest == null) {
-                try {
-                    digest = MessageDigest.getInstance(algorithm);
-                    digests.put(algorithm, digest);
-                }
-                catch (NoSuchAlgorithmException nsae) {
-                    Log.error("Failed to load the " + algorithm + " MessageDigest. " +
-                            "Jive will be unable to function normally.", nsae);
-                    return null;
-                }
+        MessageDigest digest = digests.computeIfAbsent(algorithm, a -> {
+            try {
+                return MessageDigest.getInstance(algorithm);
             }
-            // Now, compute hash.
-            digest.update(bytes);
-            return encodeHex(digest.digest());
-        }
+            catch (NoSuchAlgorithmException nsae) {
+                Log.error("Failed to load the " + algorithm + " MessageDigest. " +
+                        "Jive will be unable to function normally.", nsae);
+                return null;
+            }
+        });
+        // Now, compute hash.
+        digest.update(bytes);
+        return encodeHex(digest.digest());
     }
 
     /**
@@ -500,14 +473,14 @@ public final class StringUtils {
              start = end, end = boundary.next()) {
             String tmp = text.substring(start, end).trim();
             // Remove characters that are not needed.
-            tmp = replace(tmp, "+", "");
-            tmp = replace(tmp, "/", "");
-            tmp = replace(tmp, "\\", "");
-            tmp = replace(tmp, "#", "");
-            tmp = replace(tmp, "*", "");
-            tmp = replace(tmp, ")", "");
-            tmp = replace(tmp, "(", "");
-            tmp = replace(tmp, "&", "");
+            tmp = tmp.replace("+", "");
+            tmp = tmp.replace("/", "");
+            tmp = tmp.replace("\\", "");
+            tmp = tmp.replace("#", "");
+            tmp = tmp.replace("*", "");
+            tmp = tmp.replace(")", "");
+            tmp = tmp.replace("(", "");
+            tmp = tmp.replace("&", "");
             if (tmp.length() > 0) {
                 wordList.add(tmp);
             }
@@ -804,10 +777,10 @@ public final class StringUtils {
      * @return the string with appropriate characters unescaped.
      */
     public static String unescapeFromXML(String string) {
-        string = replace(string, "&lt;", "<");
-        string = replace(string, "&gt;", ">");
-        string = replace(string, "&quot;", "\"");
-        return replace(string, "&amp;", "&");
+        string = string.replace("&lt;", "<");
+        string = string.replace("&gt;", ">");
+        string = string.replace("&quot;", "\"");
+        return string.replace("&amp;", "&");
     }
 
     private static final char[] zeroArray =
@@ -852,29 +825,29 @@ public final class StringUtils {
      * @return textual representation for the time that has elapsed.
      */
     public static String getFullElapsedTime(final long delta) {
-        if (delta < JiveConstants.SECOND) {
+        if (delta < Duration.ofSeconds(1).toMillis()) {
             return String.format("%d %s", delta, delta == 1 ? LocaleUtils.getLocalizedString("global.millisecond") : LocaleUtils.getLocalizedString("global.milliseconds"));
-        } else if (delta < JiveConstants.MINUTE) {
-            final long millis = delta % JiveConstants.SECOND;
-            final long seconds = delta / JiveConstants.SECOND;
+        } else if (delta < Duration.ofMinutes(1).toMillis()) {
+            final long millis = delta % Duration.ofSeconds(1).toMillis();
+            final long seconds = delta / Duration.ofSeconds(1).toMillis();
             final String secondsString = String.format("%d %s", seconds, seconds == 1 ? LocaleUtils.getLocalizedString("global.second") : LocaleUtils.getLocalizedString("global.seconds"));
             if (millis > 0) {
                 return secondsString + ", " + getFullElapsedTime(millis);
             } else {
                 return secondsString;
             }
-        } else if (delta < JiveConstants.HOUR) {
-            final long millis = delta % JiveConstants.MINUTE;
-            final long minutes = delta / JiveConstants.MINUTE;
+        } else if (delta < Duration.ofHours(1).toMillis()) {
+            final long millis = delta % Duration.ofMinutes(1).toMillis();
+            final long minutes = delta / Duration.ofMinutes(1).toMillis();
             final String minutesString = String.format("%d %s", minutes, minutes == 1 ? LocaleUtils.getLocalizedString("global.minute") : LocaleUtils.getLocalizedString("global.minutes"));
             if (millis > 0) {
                 return minutesString + ", " + getFullElapsedTime(millis);
             } else {
                 return minutesString;
             }
-        } else if (delta < JiveConstants.DAY) {
-            final long millis = delta % JiveConstants.HOUR;
-            final long hours = delta / JiveConstants.HOUR;
+        } else if (delta < Duration.ofDays(1).toMillis()) {
+            final long millis = delta % Duration.ofHours(1).toMillis();
+            final long hours = delta / Duration.ofHours(1).toMillis();
             final String daysString = String.format("%d %s", hours, hours == 1 ? LocaleUtils.getLocalizedString("global.hour") : LocaleUtils.getLocalizedString("global.hours"));
             if (millis > 0) {
                 return daysString + ", " + getFullElapsedTime(millis);
@@ -882,8 +855,8 @@ public final class StringUtils {
                 return daysString;
             }
         } else {
-            final long millis = delta % JiveConstants.DAY;
-            final long days = delta / JiveConstants.DAY;
+            final long millis = delta % Duration.ofDays(1).toMillis();
+            final long days = delta / Duration.ofDays(1).toMillis();
             final String daysString = String.format("%d %s", days, days == 1 ? LocaleUtils.getLocalizedString("global.day") : LocaleUtils.getLocalizedString("global.days"));
             if (millis > 0) {
                 return daysString + ", " + getFullElapsedTime(millis);
@@ -910,20 +883,20 @@ public final class StringUtils {
      * @return textual representation for the time that has elapsed.
      */
     public static String getElapsedTime(long delta) {
-        if (delta < JiveConstants.MINUTE) {
+        if (delta < Duration.ofMinutes(1).toMillis()) {
             return LocaleUtils.getLocalizedString("global.less-minute");
         }
-        else if (delta < JiveConstants.HOUR) {
-            long mins = delta / JiveConstants.MINUTE;
+        else if (delta < Duration.ofHours(1).toMillis()) {
+            long mins = delta / Duration.ofMinutes(1).toMillis();
             StringBuilder sb = new StringBuilder();
             sb.append(mins).append(' ');
             sb.append((mins==1) ? LocaleUtils.getLocalizedString("global.minute") : LocaleUtils.getLocalizedString("global.minutes"));
             return sb.toString();
         }
-        else if (delta < JiveConstants.DAY) {
-            long hours = delta / JiveConstants.HOUR;
-            delta -= hours * JiveConstants.HOUR;
-            long mins = delta / JiveConstants.MINUTE;
+        else if (delta < Duration.ofDays(1).toMillis()) {
+            long hours = delta / Duration.ofHours(1).toMillis();
+            delta -= Duration.ofHours(hours).toMillis();
+            long mins = delta / Duration.ofMinutes(1).toMillis();
             StringBuilder sb = new StringBuilder();
             sb.append(hours).append(' ');
             sb.append((hours == 1) ? LocaleUtils.getLocalizedString("global.hour") : LocaleUtils.getLocalizedString("global.hours"));
@@ -932,11 +905,11 @@ public final class StringUtils {
             sb.append((mins == 1) ? LocaleUtils.getLocalizedString("global.minute") : LocaleUtils.getLocalizedString("global.minutes"));
             return sb.toString();
         } else {
-            long days = delta / JiveConstants.DAY;
-            delta -= days * JiveConstants.DAY;
-            long hours = delta / JiveConstants.HOUR;
-            delta -= hours * JiveConstants.HOUR;
-            long mins = delta / JiveConstants.MINUTE;
+            long days = delta / Duration.ofDays(1).toMillis();
+            delta -= Duration.ofDays(days).toMillis();
+            long hours = delta / Duration.ofHours(1).toMillis();
+            delta -= Duration.ofHours(hours).toMillis();
+            long mins = delta / Duration.ofMinutes(1).toMillis();
             StringBuilder sb = new StringBuilder();
             sb.append(days).append(' ');
             sb.append((days == 1) ? LocaleUtils.getLocalizedString("global.day") : LocaleUtils.getLocalizedString("global.days"));
@@ -1138,36 +1111,11 @@ public final class StringUtils {
     public static String removeXSSCharacters(String input) {
         final String[] xss = { "<", ">", "\"", "'", "%", ";", ")", "(", "&",
                 "+", "-" };
-        for (int i = 0; i < xss.length; i++) {
-            input = input.replace(xss[i], "");
+        for (String s : xss) {
+            input = input.replace(s, "");
         }
         return input;
     }
-    
-    /**
-     * Returns the UTF-8 bytes for the given String.
-     * 
-     * @param input The source string
-     * @return The UTF-8 encoding for the given string
-     * @deprecated Use {@code input.getBytes(StandardCharsets.UTF_8)}
-     */
-    @Deprecated
-    public static byte[] getBytes(String input) {
-        return input.getBytes(StandardCharsets.UTF_8);
-    }
-    
-    /**
-     * Returns the UTF-8 String for the given byte array.
-     * 
-     * @param input The source byte array
-     * @return The UTF-8 encoded String for the given byte array
-     * @deprecated Use {@code new String(input, StandardCharsets.UTF_8)}
-     */
-    @Deprecated
-    public static String getString(byte[] input) {
-        return new String(input, StandardCharsets.UTF_8);
-    }
-
 
     /**
      * @param nullableString the string to check

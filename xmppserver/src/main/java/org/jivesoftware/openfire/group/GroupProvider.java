@@ -55,7 +55,7 @@ public interface GroupProvider {
      * @throws UnsupportedOperationException if the provider does not
      *      support the operation.
      */
-    Group createGroup(String name) throws GroupAlreadyExistsException;
+    Group createGroup(String name) throws GroupAlreadyExistsException, GroupNameInvalidException;
 
     /**
      * Deletes the group (optional operation).
@@ -64,7 +64,7 @@ public interface GroupProvider {
      * @throws UnsupportedOperationException if the provider does not
      *      support the operation.
      */
-    void deleteGroup(String name);
+    void deleteGroup(String name) throws GroupNotFoundException;
 
     /**
      * Returns a group based on it's name.
@@ -85,7 +85,7 @@ public interface GroupProvider {
      * @throws UnsupportedOperationException if the provider does not
      *      support the operation.
      */
-    void setName(String oldName, String newName) throws GroupAlreadyExistsException;
+    void setName(String oldName, String newName) throws GroupAlreadyExistsException, GroupNameInvalidException, GroupNotFoundException;
 
     /**
      * Updates the group's description.
@@ -177,7 +177,7 @@ public interface GroupProvider {
      * @throws UnsupportedOperationException if the provider does not
      *      support the operation.
      */
-    void addMember(String groupName, JID user, boolean administrator);
+    void addMember(String groupName, JID user, boolean administrator) throws GroupNotFoundException;
 
     /**
      * Updates the privileges of an entity in a group.
@@ -188,7 +188,7 @@ public interface GroupProvider {
      * @throws UnsupportedOperationException if the provider does not
      *      support the operation.
      */
-    void updateMember(String groupName, JID user, boolean administrator);
+    void updateMember(String groupName, JID user, boolean administrator) throws GroupNotFoundException;
 
     /**
      * Deletes an entity from a group (optional operation).

@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2004-2008 Jive Software. All rights reserved.
+ * Copyright (C) 2004-2008 Jive Software, 2022 Ignite Realtime Foundation. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,6 +16,9 @@
 
 package org.jivesoftware.util.cache;
 
+import org.jivesoftware.openfire.cluster.ClusteredCacheEntryListener;
+
+import javax.annotation.Nonnull;
 import java.io.Serializable;
 import java.util.Collection;
 import java.util.Map;
@@ -82,19 +85,6 @@ public interface Cache<K extends Serializable, V extends Serializable> extends j
     long getMaxCacheSize();
 
     /**
-     * Sets the maximum size of the cache in bytes limited to integer size. If the cache grows larger
-     * than the max size, the least frequently used items will be removed. If
-     * the max cache size is set to -1, there is no size limit.
-     *
-     *<p><strong>Note:</strong> If using the Hazelcast clustering plugin, this will not take
-     * effect until the next time the cache is created</p>
-     *
-     * @param maxSize the maximum size of the cache in bytes.
-     */
-    @Deprecated
-    void setMaxCacheSize(int maxSize);
-
-    /**
      * Sets the maximum size of the cache in bytes. If the cache grows larger
      * than the max size, the least frequently used items will be removed. If
      * the max cache size is set to -1, there is no size limit.
@@ -102,13 +92,9 @@ public interface Cache<K extends Serializable, V extends Serializable> extends j
      *<p><strong>Note:</strong> If using the Hazelcast clustering plugin, this will not take
      * effect until the next time the cache is created</p>
      *
-     * Attention: The default implementation of this method sets the cache value limited to integer size.
-     *
      * @param maxSize the maximum size of the cache in bytes.
      */
-    default void setMaxCacheSize(long maxSize){
-        setMaxCacheSize((int)Math.min(Integer.MAX_VALUE,maxSize));
-    }
+    void setMaxCacheSize(long maxSize);
 
     /**
      * Returns the maximum number of milliseconds that any object can live
@@ -134,29 +120,14 @@ public interface Cache<K extends Serializable, V extends Serializable> extends j
     void setMaxLifetime(long maxLifetime);
 
     /**
-     * Returns the size of the cache contents in bytes limited to integer size. This value is only a
-     * rough approximation, so cache users should expect that actual VM
-     * memory used by the cache could be significantly higher than the value
-     * reported by this method.
-     *
-     * @return the size of the cache contents in bytes.
-     */
-    @Deprecated
-    int getCacheSize();
-
-    /**
      * Returns the size of the cache contents in bytes. This value is only a
      * rough approximation, so cache users should expect that actual VM
      * memory used by the cache could be significantly higher than the value
      * reported by this method.
      *
-     * Attention: The default implementation of this method returns the cache value limited to integer size.
-     *
      * @return the size of the cache contents in bytes.
      */
-    default long getLongCacheSize(){
-        return getCacheSize();
-    }
+    long getLongCacheSize();
 
     /**
      * Returns the number of cache hits. A cache hit occurs every
@@ -243,4 +214,25 @@ public interface Cache<K extends Serializable, V extends Serializable> extends j
     default boolean isValueSecret() {
         return this.secretValue.get();
     }
+
+    /**
+     * Registers a listener to receive entry events for this cache.
+     *
+     * To optimize the amount of data that is being processed, this method allows the listener to be registered in a way
+     * that suppresses values from being sent to it. In that case, only keys will be included in the event listener
+     * invocation.
+     *
+     * @param listener the listener to be registered.
+     * @param includeValues defines if the listener should receive the values associated with the events.
+     * @param includeEventsFromLocalNode defines if the listener should be invoked for events that originate on the local node.
+     * @return a unique identifier for the listener which is used as a key to remove the listener
+     */
+    String addClusteredCacheEntryListener(@Nonnull final ClusteredCacheEntryListener<K, V> listener, final boolean includeValues, final boolean includeEventsFromLocalNode);
+
+    /**
+     * Removes a previously registered event listener.
+     *
+     * @param listenerId the identifier of the listener to be removed.
+     */
+    void removeClusteredCacheEntryListener(@Nonnull final String listenerId);
 }

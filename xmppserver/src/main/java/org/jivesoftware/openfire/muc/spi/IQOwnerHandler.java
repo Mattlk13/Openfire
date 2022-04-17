@@ -22,16 +22,14 @@ import java.util.stream.Collectors;
 import org.dom4j.DocumentHelper;
 import org.dom4j.Element;
 import org.dom4j.QName;
-import org.jivesoftware.openfire.PacketRouter;
+import org.jivesoftware.openfire.XMPPServer;
 import org.jivesoftware.openfire.group.Group;
 import org.jivesoftware.openfire.group.GroupJID;
 import org.jivesoftware.openfire.group.GroupManager;
 import org.jivesoftware.openfire.group.GroupNotFoundException;
 import org.jivesoftware.openfire.muc.*;
-import org.jivesoftware.openfire.muc.cluster.RoomUpdatedEvent;
 import org.jivesoftware.util.JiveGlobals;
 import org.jivesoftware.util.LocaleUtils;
-import org.jivesoftware.util.cache.CacheFactory;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.xmpp.forms.DataForm;
@@ -50,9 +48,7 @@ public class IQOwnerHandler {
     
     private static final Logger Log = LoggerFactory.getLogger(IQOwnerHandler.class);
 
-    private final LocalMUCRoom room;
-
-    private final PacketRouter router;
+    private final MUCRoom room;
 
     private DataForm configurationForm;
 
@@ -60,9 +56,8 @@ public class IQOwnerHandler {
 
     private final boolean skipInvite;
 
-    public IQOwnerHandler(LocalMUCRoom chatroom, PacketRouter packetRouter) {
+    public IQOwnerHandler(MUCRoom chatroom) {
         this.room = chatroom;
-        this.router = packetRouter;
         this.skipInvite = JiveGlobals.getBooleanProperty(
                 "xmpp.muc.skipInvite", false);
         init();
@@ -139,7 +134,7 @@ public class IQOwnerHandler {
         if (reply.getTo() != null) {
             // Send a reply only if the sender of the original packet was from a real JID. (i.e. not
             // a packet generated locally)
-            router.route(reply);
+            XMPPServer.getInstance().getPacketRouter().route(reply);
         }
     }
 
@@ -179,10 +174,6 @@ public class IQOwnerHandler {
             // message
             if (room.isLocked() && !room.isManuallyLocked()) {
                 room.unlock(senderRole);
-            }
-            if (!room.isDestroyed) {
-                // Let other cluster nodes that the room has been updated
-                CacheFactory.doClusterTask(new RoomUpdatedEvent(room));
             }
             break;
             
@@ -430,7 +421,7 @@ public class IQOwnerHandler {
         if (ownersSent) {
             // Change the affiliation to "member" for the current owners that won't be neither
             // owner nor admin (if the form included the owners field)
-            List<JID> ownersToRemove = new ArrayList<>(room.owners);
+            List<JID> ownersToRemove = new ArrayList<>(room.getOwners());
             ownersToRemove.removeAll(admins);
             ownersToRemove.removeAll(owners);
             for (JID jid : ownersToRemove) {
@@ -444,7 +435,7 @@ public class IQOwnerHandler {
         if (adminsSent) {
             // Change the affiliation to "member" for the current admins that won't be neither
             // owner nor admin (if the form included the admins field)
-            List<JID> adminsToRemove = new ArrayList<>(room.admins);
+            List<JID> adminsToRemove = new ArrayList<>(room.getAdmins());
             adminsToRemove.removeAll(admins);
             adminsToRemove.removeAll(owners);
             for (JID jid : adminsToRemove) {
@@ -481,8 +472,7 @@ public class IQOwnerHandler {
     }
 
     private void refreshConfigurationFormValues() {
-        room.lock.readLock().lock();
-        try {
+        synchronized (room) {
             FormField field = configurationForm.getField("muc#roomconfig_roomname");
             field.clearValues();
             field.addValue(room.getNaturalLanguageName());
@@ -598,9 +588,6 @@ public class IQOwnerHandler {
             // Add the new representation of configurationForm as an element 
             probeResult.add(configurationForm.getElement());
 
-        }
-        finally {
-            room.lock.readLock().unlock();
         }
     }
 

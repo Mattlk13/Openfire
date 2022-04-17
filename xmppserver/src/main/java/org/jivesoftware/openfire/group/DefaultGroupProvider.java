@@ -77,7 +77,18 @@ public class DefaultGroupProvider extends AbstractGroupProvider {
     private XMPPServer server = XMPPServer.getInstance();
 
     @Override
-    public Group createGroup(String name) {
+    public Group createGroup(String name) throws GroupNameInvalidException, GroupAlreadyExistsException {
+        super.createGroup(name);
+
+        if(name.trim().isEmpty()){
+            throw new GroupNameInvalidException("Group name cannot be empty");
+        }
+        try {
+            this.getGroup(name);
+            throw new GroupAlreadyExistsException("A group with the same name already exists");
+        } catch (GroupNotFoundException e) {
+            //Expected, do nothing
+        }
         Connection con = null;
         PreparedStatement pstmt = null;
         try {
@@ -129,6 +140,14 @@ public class DefaultGroupProvider extends AbstractGroupProvider {
 
     @Override
     public void setDescription(String name, String description) throws GroupNotFoundException {
+        super.setDescription(name, description);
+
+        try {
+            this.getGroup(name);
+        } catch (GroupNotFoundException e) {
+            throw new GroupNotFoundException("A group with this name cannot be found");
+        }
+
         Connection con = null;
         PreparedStatement pstmt = null;
         try {
@@ -140,7 +159,7 @@ public class DefaultGroupProvider extends AbstractGroupProvider {
         }
         catch (SQLException e) {
             Log.error(e.getMessage(), e);
-            throw new GroupNotFoundException();
+            throw new GroupNotFoundException(e); //We wrap using this, even though it probably isn't...
         }
         finally {
             DbConnectionManager.closeConnection(pstmt, con);
@@ -148,8 +167,26 @@ public class DefaultGroupProvider extends AbstractGroupProvider {
     }
 
     @Override
-    public void setName(String oldName, String newName) throws GroupAlreadyExistsException
-    {
+    public void setName(String oldName, String newName) throws GroupAlreadyExistsException, GroupNameInvalidException, GroupNotFoundException {
+        super.setName(oldName, newName);
+
+        if(newName.trim().isEmpty()){
+            throw new GroupNameInvalidException("Group name cannot be empty");
+        }
+
+        try {
+            this.getGroup(oldName);
+        } catch (GroupNotFoundException e) {
+            throw new GroupNotFoundException("A group with this name cannot be found");
+        }
+
+        try {
+            this.getGroup(newName);
+            throw new GroupAlreadyExistsException("A group with the same name already exists");
+        } catch (GroupNotFoundException e) {
+            //Expected, do nothing
+        }
+
         Connection con = null;
         PreparedStatement pstmt = null;
         boolean abortTransaction = false;
@@ -183,7 +220,9 @@ public class DefaultGroupProvider extends AbstractGroupProvider {
     }
 
     @Override
-    public void deleteGroup(String groupName) {
+    public void deleteGroup(String groupName) throws GroupNotFoundException {
+        super.deleteGroup(groupName);
+
         Connection con = null;
         PreparedStatement pstmt = null;
         boolean abortTransaction = false;
@@ -204,7 +243,10 @@ public class DefaultGroupProvider extends AbstractGroupProvider {
             // Remove the group entry.
             pstmt = con.prepareStatement(DELETE_GROUP);
             pstmt.setString(1, groupName);
-            pstmt.executeUpdate();
+            int groupsDeleted = pstmt.executeUpdate();
+            if (groupsDeleted == 0){
+                throw new GroupNotFoundException("Did not find group to delete");
+            }
         }
         catch (SQLException e) {
             Log.error(e.getMessage(), e);
@@ -312,14 +354,22 @@ public class DefaultGroupProvider extends AbstractGroupProvider {
     }
 
     @Override
-    public void addMember(String groupName, JID user, boolean administrator) {
+    public void addMember(String groupName, JID user, boolean administrator) throws GroupNotFoundException {
+        super.addMember(groupName, user, administrator);
+
+        try {
+            this.getGroup(groupName);
+        } catch (GroupNotFoundException e) {
+            throw new GroupNotFoundException("A group with this name cannot be found");
+        }
+
         Connection con = null;
         PreparedStatement pstmt = null;
         try {
             con = DbConnectionManager.getConnection();
             pstmt = con.prepareStatement(ADD_USER);
             pstmt.setString(1, groupName);
-            pstmt.setString(2, server.isLocal(user) ? user.getNode() : user.toString());
+            pstmt.setString(2, server.isLocal(user) ? user.getNode() : user.asBareJID().toString());
             pstmt.setInt(3, administrator ? 1 : 0);
             pstmt.executeUpdate();
         }
@@ -332,7 +382,15 @@ public class DefaultGroupProvider extends AbstractGroupProvider {
     }
 
     @Override
-    public void updateMember(String groupName, JID user, boolean administrator) {
+    public void updateMember(String groupName, JID user, boolean administrator) throws GroupNotFoundException {
+        super.updateMember(groupName, user, administrator);
+
+        try {
+            this.getGroup(groupName);
+        } catch (GroupNotFoundException e) {
+            throw new GroupNotFoundException("A group with this name cannot be found");
+        }
+
         Connection con = null;
         PreparedStatement pstmt = null;
         try {
@@ -353,6 +411,8 @@ public class DefaultGroupProvider extends AbstractGroupProvider {
 
     @Override
     public void deleteMember(String groupName, JID user) {
+        super.deleteMember(groupName, user);
+
         Connection con = null;
         PreparedStatement pstmt = null;
         try {

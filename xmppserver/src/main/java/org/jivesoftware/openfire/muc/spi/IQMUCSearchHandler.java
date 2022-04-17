@@ -152,11 +152,14 @@ public class IQMUCSearchHandler
         {
             if (field.getVariable().equals("name"))
             {
-                names.add(field.getFirstValue());
+                if (field.getFirstValue()!=null&&field.getFirstValue().trim().length()>0)
+                {
+                    names.add(field.getFirstValue());
+                }
             }
         }
 
-        final FormField matchFF = df.getField("nameIsExactMatch");
+        final FormField matchFF = df.getField("name_is_exact_match");
         if (matchFF != null)
         {
             final String b = matchFF.getFirstValue();
@@ -245,7 +248,7 @@ public class IQMUCSearchHandler
                 }
             }
 
-            if (subject != null
+            if (subject != null && subject.trim().length()>0
                     && room.getSubject().toLowerCase().indexOf(
                         subject.toLowerCase()) != -1)
             {

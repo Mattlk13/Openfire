@@ -16,18 +16,10 @@
 
 package org.jivesoftware.openfire.cluster;
 
-import java.nio.charset.StandardCharsets;
-import java.util.Collection;
-import java.util.Map;
-import java.util.Optional;
-import java.util.Queue;
-import java.util.concurrent.BlockingQueue;
-import java.util.concurrent.ConcurrentLinkedQueue;
-import java.util.concurrent.LinkedBlockingQueue;
-import java.util.concurrent.Semaphore;
-
+import org.apache.commons.lang3.tuple.Pair;
 import org.jivesoftware.openfire.XMPPServer;
 import org.jivesoftware.openfire.container.Plugin;
+import org.jivesoftware.openfire.container.PluginMetadata;
 import org.jivesoftware.util.JiveGlobals;
 import org.jivesoftware.util.JiveProperties;
 import org.jivesoftware.util.PropertyEventDispatcher;
@@ -36,6 +28,21 @@ import org.jivesoftware.util.TaskEngine;
 import org.jivesoftware.util.cache.CacheFactory;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
+import java.nio.charset.StandardCharsets;
+import java.util.Collection;
+import java.util.Comparator;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Optional;
+import java.util.Queue;
+import java.util.Set;
+import java.util.concurrent.BlockingQueue;
+import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.Semaphore;
+import java.util.stream.Collectors;
 
 /**
  * A cluster manager is responsible for triggering events related to clustering.
@@ -48,7 +55,7 @@ public class ClusterManager {
     private static final Logger Log = LoggerFactory.getLogger(ClusterManager.class);
 
     public static String CLUSTER_PROPERTY_NAME = "clustering.enabled";
-    private static Queue<ClusterEventListener> listeners = new ConcurrentLinkedQueue<>();
+    private static Queue<Pair<Integer, ClusterEventListener>> listeners = new ConcurrentLinkedQueue<>();
     private static BlockingQueue<Event> events = new LinkedBlockingQueue<>(10000);
     private static Thread dispatcher;
 
@@ -103,8 +110,15 @@ public class ClusterManager {
                                     CacheFactory.leftCluster();
                                 }
                             }
+
                             // Now notify rest of the listeners
-                            for (ClusterEventListener listener : listeners) {
+                            final List<ClusterEventListener> listenersOrderedBySequence = listeners
+                                .stream()
+                                .sorted(Comparator.comparing(Pair::getKey))
+                                .map(Pair::getValue)
+                                .collect(Collectors.toList());
+
+                            for (ClusterEventListener listener : listenersOrderedBySequence) {
                                 try {
                                     switch (eventType) {
                                         case joined_cluster: {
@@ -156,10 +170,20 @@ public class ClusterManager {
      * @param listener the listener.
      */
     public static void addListener(ClusterEventListener listener) {
+        ClusterManager.addListener(listener, 0);
+    }
+
+    /**
+     * Registers a listener to receive events, defining the order in which listeners are invoked.
+     *
+     * @param listener the listener.
+     * @param sequence defines the order of listener invocation.
+     */
+    public static void addListener(ClusterEventListener listener, int sequence) {
         if (listener == null) {
             throw new NullPointerException();
         }
-        listeners.add(listener);
+        listeners.add(Pair.of(sequence, listener));
     }
 
     /**
@@ -168,9 +192,12 @@ public class ClusterManager {
      * @param listener the listener.
      */
     public static void removeListener(ClusterEventListener listener) {
-        listeners.remove(listener);
+        final Optional<Pair<Integer, ClusterEventListener>> removeMe = listeners
+            .stream()
+            .filter(p -> p.getValue().equals(listener))
+            .findAny();
+        removeMe.ifPresent(listeners::remove);
     }
-
 
     /**
      * Triggers event indicating that this JVM is now part of a cluster. At this point the
@@ -428,6 +455,86 @@ public class ClusterManager {
         return CacheFactory.getClusterNodesInfo().stream()
             .filter(nodeInfo -> nodeInfo.getNodeID().equals(nodeID))
             .findAny();
+    }
+
+
+    /**
+     * Returns the versions of plugins installed on all nodes in the cluster.
+     *
+     * If, for some reason, the version information can not be retrieved from some remote node, that node will be
+     * missing entirely from the result.
+     *
+     * The openfire version is included in the result as well, under the key "Openfire".
+     *
+     * @return A map of maps, containing pluginName -> (nodeId -> pluginVersion)
+     */
+    public static Map<String, Map<NodeID, String>> getPluginAndOpenfireVersions() {
+        final Set<String> allPluginNames = XMPPServer.getInstance().getPluginManager().getMetadataExtractedPlugins().values().stream().map(PluginMetadata::getName).collect(Collectors.toSet());
+        allPluginNames.remove("admin"); // No need for this highly internal plugin to be included, as we will include the OF version
+        final Map<String, Map<NodeID, String>> result = allPluginNames.stream().collect(Collectors.toMap(pluginName -> pluginName, pluginName -> new HashMap<>()));
+        result.put("Openfire", new HashMap<>()); // Include openfire version
+
+        for (ClusterNodeInfo cni : ClusterManager.getNodesInfo()) {
+            final NodeID nodeID = cni.getNodeID();
+
+            // Note; if any one node in the cluster does not have the GetClusterVersions task, running
+            // CacheFactory.doSynchronousClusterTask() on all nodes will return an empty collection. For
+            // that reason, run the task on each node individually.
+            final GetClusteredVersions clusteredVersions = CacheFactory.doSynchronousClusterTask(
+                new GetClusteredVersions(), nodeID.toByteArray());
+            if (clusteredVersions == null) {
+                // Something went wrong fetching the versions
+                Log.warn("Plugin versions on node {} could not be verified because GetClusteredVersions task returned null.", nodeID);
+            } else {
+                result.get("Openfire").put(nodeID, clusteredVersions.getOpenfireVersion());
+                for(Map.Entry<String, String> pluginVersion : clusteredVersions.getPluginVersions().entrySet()) {
+                    final String name = pluginVersion.getKey();
+                    final String version = pluginVersion.getValue();
+
+                    result.computeIfAbsent(name, k -> (new HashMap<>()))
+                        .put(nodeID, version);
+                }
+            }
+        }
+
+        return result;
+    }
+
+    /**
+     * Inspects whether the version of a specific plugin on remote nodes differs from the version installed locally.
+     *
+     * When the remote node has the same version of the plugin installed, the returned map will not include the NodeID
+     * of that node. When the remote node has a different version of the plugin installed, the returned map will include
+     * a NodeID entry that maps to the version identifier of the plugin that is installed on that node. When the remote
+     * node does not have the plugin installed, the returned map will contain an entry that has a null value.
+     *
+     * @param pluginName The (full) name of the plugin to check.
+     * @return A map containing the nodeID that has a different version of this plugin.
+     */
+    public static Map<NodeID, String> findRemotePluginsWithDifferentVersion(final String pluginName) {
+        final Map<String, Map<NodeID, String>> allPluginVersions = getPluginAndOpenfireVersions();
+        final Set<NodeID> allNodeIDs = ClusterManager.getNodesInfo().stream().map(ClusterNodeInfo::getNodeID).collect(Collectors.toSet());
+
+        if (!allPluginVersions.containsKey(pluginName)) {
+            return null;
+        }
+
+        final Map<NodeID, String> pluginVersion = allPluginVersions.get(pluginName);
+        final String localPluginVersion = pluginVersion.get(XMPPServer.getInstance().getNodeID());
+
+        final Map<NodeID, String> result = new HashMap<>();
+        for (final NodeID nodeID : allNodeIDs) {
+            final String remoteVersion = pluginVersion.get(nodeID);
+            if (remoteVersion == null && localPluginVersion != null) {
+                // Not installed remotely.
+                result.put(nodeID, null);
+            } else if (remoteVersion != null && !remoteVersion.equals(localPluginVersion)) {
+                // Remote has a version that is different from the local version (or locally, this plugin isn't installed).
+                result.put(nodeID, remoteVersion);
+            }
+        }
+
+        return result;
     }
 
     /**

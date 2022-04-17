@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2004-2008 Jive Software. All rights reserved.
+ * Copyright (C) 2004-2008 Jive Software, 2022 Ignite Realtime Foundation. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,34 +15,30 @@
  */
 package org.jivesoftware.util.cache;
 
-import java.net.URL;
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.Collection;
-import java.util.Collections;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.TimeUnit;
-import java.util.concurrent.locks.Lock;
-
 import org.jivesoftware.openfire.XMPPServer;
 import org.jivesoftware.openfire.XMPPServerListener;
 import org.jivesoftware.openfire.cluster.ClusterEventListener;
 import org.jivesoftware.openfire.cluster.ClusterManager;
 import org.jivesoftware.openfire.cluster.ClusterNodeInfo;
+import org.jivesoftware.openfire.cluster.ClusterPacketRouter;
 import org.jivesoftware.openfire.container.Plugin;
 import org.jivesoftware.openfire.container.PluginClassLoader;
 import org.jivesoftware.openfire.container.PluginManager;
+import org.jivesoftware.openfire.session.RemoteSessionLocatorImpl;
 import org.jivesoftware.util.InitializationException;
-import org.jivesoftware.util.JiveConstants;
 import org.jivesoftware.util.JiveGlobals;
 import org.jivesoftware.util.PropertyEventDispatcher;
 import org.jivesoftware.util.PropertyEventListener;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.xmpp.packet.JID;
+
+import java.net.URL;
+import java.time.Duration;
+import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.locks.Lock;
 
 /**
  * Creates Cache objects. The returned caches will either be local or clustered
@@ -68,7 +64,7 @@ public class CacheFactory {
      * Storage for all caches that get created.
      */
     private static Map<String, Cache> caches = new ConcurrentHashMap<>();
-    private static List<String> localOnly = Collections.synchronizedList(new ArrayList<String>());
+    private static List<String> localOnly = Collections.synchronizedList(new ArrayList<>());
 
     private static String localCacheFactoryClass;
     private static String clusteredCacheFactoryClass;
@@ -78,7 +74,7 @@ public class CacheFactory {
     private static Thread statsThread;
 
     public static final int DEFAULT_MAX_CACHE_SIZE = 1024 * 256;
-    public static final long DEFAULT_MAX_CACHE_LIFETIME = 6 * JiveConstants.HOUR;
+    public static final long DEFAULT_MAX_CACHE_LIFETIME = Duration.ofHours(6).toMillis();
 
     /**
      * This map contains property names which were used to store cache configuration data
@@ -112,6 +108,7 @@ public class CacheFactory {
         cacheNames.put("Favicon Misses", "faviconMisses");
         cacheNames.put("Group", "group");
         cacheNames.put("Group Metadata Cache", "groupMeta");
+        cacheNames.put("Group (Shared) Metadata Cache", "groupSharingMeta");
         cacheNames.put("Javascript Cache", "javascript");
         cacheNames.put("Last Activity Cache", "lastActivity");
         cacheNames.put("Multicast Service", "multicast");
@@ -153,40 +150,43 @@ public class CacheFactory {
         cacheNames.put("JID Domain-parts", "jidDomainprep");
         cacheNames.put("JID Resource-parts", "jidResourceprep");
         cacheNames.put("Sequences", "sequences");
+        cacheNames.put("MUC Service Pings Sent", "mucPings");
 
         cacheProps.put(PROPERTY_PREFIX_CACHE + "dnsRecords" + PROPERTY_SUFFIX_SIZE, 128 * 1024L);
-        cacheProps.put(PROPERTY_PREFIX_CACHE + "dnsRecords" + PROPERTY_SUFFIX_MAX_LIFE_TIME, 1000 * 60L);
+        cacheProps.put(PROPERTY_PREFIX_CACHE + "dnsRecords" + PROPERTY_SUFFIX_MAX_LIFE_TIME, Duration.ofMinutes(1).toMillis());
         cacheProps.put(PROPERTY_PREFIX_CACHE + "fileTransfer" + PROPERTY_SUFFIX_SIZE, 128 * 1024L);
-        cacheProps.put(PROPERTY_PREFIX_CACHE + "fileTransfer" + PROPERTY_SUFFIX_MAX_LIFE_TIME, 1000 * 60 * 10L);
+        cacheProps.put(PROPERTY_PREFIX_CACHE + "fileTransfer" + PROPERTY_SUFFIX_MAX_LIFE_TIME, Duration.ofMinutes(10).toMillis());
         cacheProps.put(PROPERTY_PREFIX_CACHE + "multicast" + PROPERTY_SUFFIX_SIZE, 128 * 1024L);
-        cacheProps.put(PROPERTY_PREFIX_CACHE + "multicast" + PROPERTY_SUFFIX_MAX_LIFE_TIME, JiveConstants.DAY);
+        cacheProps.put(PROPERTY_PREFIX_CACHE + "multicast" + PROPERTY_SUFFIX_MAX_LIFE_TIME, Duration.ofDays(1).toMillis());
         cacheProps.put(PROPERTY_PREFIX_CACHE + "offlinemessage" + PROPERTY_SUFFIX_SIZE, 100 * 1024L);
-        cacheProps.put(PROPERTY_PREFIX_CACHE + "offlinemessage" + PROPERTY_SUFFIX_MAX_LIFE_TIME, JiveConstants.HOUR * 12);
+        cacheProps.put(PROPERTY_PREFIX_CACHE + "offlinemessage" + PROPERTY_SUFFIX_MAX_LIFE_TIME, Duration.ofHours(12).toMillis());
         cacheProps.put(PROPERTY_PREFIX_CACHE + "pop3" + PROPERTY_SUFFIX_SIZE, 512 * 1024L);
-        cacheProps.put(PROPERTY_PREFIX_CACHE + "pop3" + PROPERTY_SUFFIX_MAX_LIFE_TIME, JiveConstants.HOUR);
+        cacheProps.put(PROPERTY_PREFIX_CACHE + "pop3" + PROPERTY_SUFFIX_MAX_LIFE_TIME, Duration.ofHours(1).toMillis());
         cacheProps.put(PROPERTY_PREFIX_CACHE + "transferProxy" + PROPERTY_SUFFIX_SIZE, -1L);
-        cacheProps.put(PROPERTY_PREFIX_CACHE + "transferProxy" + PROPERTY_SUFFIX_MAX_LIFE_TIME, 1000 * 60 * 10L);
+        cacheProps.put(PROPERTY_PREFIX_CACHE + "transferProxy" + PROPERTY_SUFFIX_MAX_LIFE_TIME, Duration.ofMinutes(1).toMillis());
         cacheProps.put(PROPERTY_PREFIX_CACHE + "group" + PROPERTY_SUFFIX_SIZE, 1024 * 1024L);
-        cacheProps.put(PROPERTY_PREFIX_CACHE + "group" + PROPERTY_SUFFIX_MAX_LIFE_TIME, JiveConstants.MINUTE * 15);
+        cacheProps.put(PROPERTY_PREFIX_CACHE + "group" + PROPERTY_SUFFIX_MAX_LIFE_TIME, Duration.ofMinutes(15).toMillis());
         cacheProps.put(PROPERTY_PREFIX_CACHE + "lockOutCache" + PROPERTY_SUFFIX_SIZE, 1024 * 1024L);
-        cacheProps.put(PROPERTY_PREFIX_CACHE + "lockOutCache" + PROPERTY_SUFFIX_MAX_LIFE_TIME, JiveConstants.MINUTE * 15);
+        cacheProps.put(PROPERTY_PREFIX_CACHE + "lockOutCache" + PROPERTY_SUFFIX_MAX_LIFE_TIME, Duration.ofMinutes(15).toMillis());
         cacheProps.put(PROPERTY_PREFIX_CACHE + "groupMeta" + PROPERTY_SUFFIX_SIZE, 512 * 1024L);
-        cacheProps.put(PROPERTY_PREFIX_CACHE + "groupMeta" + PROPERTY_SUFFIX_MAX_LIFE_TIME, JiveConstants.MINUTE * 15);
+        cacheProps.put(PROPERTY_PREFIX_CACHE + "groupMeta" + PROPERTY_SUFFIX_MAX_LIFE_TIME, Duration.ofMinutes(15).toMillis());
+        cacheProps.put(PROPERTY_PREFIX_CACHE + "groupSharingMeta" + PROPERTY_SUFFIX_SIZE, 512 * 1024L);
+        cacheProps.put(PROPERTY_PREFIX_CACHE + "groupSharingMeta" + PROPERTY_SUFFIX_MAX_LIFE_TIME, Duration.ofMinutes(15).toMillis());
         cacheProps.put(PROPERTY_PREFIX_CACHE + "username2roster" + PROPERTY_SUFFIX_SIZE, 1024 * 1024L);
-        cacheProps.put(PROPERTY_PREFIX_CACHE + "username2roster" + PROPERTY_SUFFIX_MAX_LIFE_TIME, JiveConstants.MINUTE * 30);
+        cacheProps.put(PROPERTY_PREFIX_CACHE + "username2roster" + PROPERTY_SUFFIX_MAX_LIFE_TIME, Duration.ofMinutes(30).toMillis());
         cacheProps.put(PROPERTY_PREFIX_CACHE + "username2rosterItems" + PROPERTY_SUFFIX_SIZE, 1024 * 1024L);
-        cacheProps.put(PROPERTY_PREFIX_CACHE + "username2rosterItems" + PROPERTY_SUFFIX_MAX_LIFE_TIME, JiveConstants.MINUTE * 10);
+        cacheProps.put(PROPERTY_PREFIX_CACHE + "username2rosterItems" + PROPERTY_SUFFIX_MAX_LIFE_TIME, Duration.ofMinutes(10).toMillis());
         cacheProps.put(PROPERTY_PREFIX_CACHE + "javascript" + PROPERTY_SUFFIX_SIZE, 128 * 1024L);
-        cacheProps.put(PROPERTY_PREFIX_CACHE + "javascript" + PROPERTY_SUFFIX_MAX_LIFE_TIME, 3600 * 24 * 10L);
+        cacheProps.put(PROPERTY_PREFIX_CACHE + "javascript" + PROPERTY_SUFFIX_MAX_LIFE_TIME, Duration.ofDays(10).toMillis());
         cacheProps.put(PROPERTY_PREFIX_CACHE + "ldap" + PROPERTY_SUFFIX_SIZE, 512 * 1024L);
-        cacheProps.put(PROPERTY_PREFIX_CACHE + "ldap" + PROPERTY_SUFFIX_MAX_LIFE_TIME, JiveConstants.HOUR * 2);
+        cacheProps.put(PROPERTY_PREFIX_CACHE + "ldap" + PROPERTY_SUFFIX_MAX_LIFE_TIME, Duration.ofHours(2).toMillis());
         cacheProps.put(PROPERTY_PREFIX_CACHE + "listsCache" + PROPERTY_SUFFIX_SIZE, 512 * 1024L);
         cacheProps.put(PROPERTY_PREFIX_CACHE + "offlinePresence" + PROPERTY_SUFFIX_SIZE, 512 * 1024L);
         cacheProps.put(PROPERTY_PREFIX_CACHE + "lastActivity" + PROPERTY_SUFFIX_SIZE, 128 * 1024L);
         cacheProps.put(PROPERTY_PREFIX_CACHE + "userCache" + PROPERTY_SUFFIX_SIZE, 512 * 1024L);
-        cacheProps.put(PROPERTY_PREFIX_CACHE + "userCache" + PROPERTY_SUFFIX_MAX_LIFE_TIME, JiveConstants.MINUTE * 30);
+        cacheProps.put(PROPERTY_PREFIX_CACHE + "userCache" + PROPERTY_SUFFIX_MAX_LIFE_TIME, Duration.ofMinutes(30).toMillis());
         cacheProps.put(PROPERTY_PREFIX_CACHE + "remoteUsersCache" + PROPERTY_SUFFIX_SIZE, 512 * 1024L);
-        cacheProps.put(PROPERTY_PREFIX_CACHE + "remoteUsersCache" + PROPERTY_SUFFIX_MAX_LIFE_TIME, JiveConstants.MINUTE * 30);
+        cacheProps.put(PROPERTY_PREFIX_CACHE + "remoteUsersCache" + PROPERTY_SUFFIX_MAX_LIFE_TIME, Duration.ofMinutes(30).toMillis());
         cacheProps.put(PROPERTY_PREFIX_CACHE + "vcardCache" + PROPERTY_SUFFIX_SIZE, 512 * 1024L);
         cacheProps.put(PROPERTY_PREFIX_CACHE + "faviconHits" + PROPERTY_SUFFIX_SIZE, 128 * 1024L);
         cacheProps.put(PROPERTY_PREFIX_CACHE + "faviconMisses" + PROPERTY_SUFFIX_SIZE, 128 * 1024L);
@@ -223,19 +223,21 @@ public class CacheFactory {
         cacheProps.put(PROPERTY_PREFIX_CACHE + "serverItems" + PROPERTY_SUFFIX_SIZE, -1L);
         cacheProps.put(PROPERTY_PREFIX_CACHE + "serverItems" + PROPERTY_SUFFIX_MAX_LIFE_TIME, -1L);
         cacheProps.put(PROPERTY_PREFIX_CACHE + "serversConfigurations" + PROPERTY_SUFFIX_SIZE, 128 * 1024L);
-        cacheProps.put(PROPERTY_PREFIX_CACHE + "serversConfigurations" + PROPERTY_SUFFIX_MAX_LIFE_TIME, JiveConstants.MINUTE * 30);
+        cacheProps.put(PROPERTY_PREFIX_CACHE + "serversConfigurations" + PROPERTY_SUFFIX_MAX_LIFE_TIME, Duration.ofMinutes(30).toMillis());
         cacheProps.put(PROPERTY_PREFIX_CACHE + "entityCapabilities" + PROPERTY_SUFFIX_SIZE, -1L);
-        cacheProps.put(PROPERTY_PREFIX_CACHE + "entityCapabilities" + PROPERTY_SUFFIX_MAX_LIFE_TIME, JiveConstants.DAY * 2);
+        cacheProps.put(PROPERTY_PREFIX_CACHE + "entityCapabilities" + PROPERTY_SUFFIX_MAX_LIFE_TIME, Duration.ofDays(2).toMillis());
         cacheProps.put(PROPERTY_PREFIX_CACHE + "entityCapabilitiesUsers" + PROPERTY_SUFFIX_SIZE, -1L);
-        cacheProps.put(PROPERTY_PREFIX_CACHE + "entityCapabilitiesUsers" + PROPERTY_SUFFIX_MAX_LIFE_TIME, JiveConstants.DAY * 2);
+        cacheProps.put(PROPERTY_PREFIX_CACHE + "entityCapabilitiesUsers" + PROPERTY_SUFFIX_MAX_LIFE_TIME, Duration.ofDays(2).toMillis());
         cacheProps.put(PROPERTY_PREFIX_CACHE + "pluginCacheInfo" + PROPERTY_SUFFIX_SIZE, -1L);
         cacheProps.put(PROPERTY_PREFIX_CACHE + "pluginCacheInfo" + PROPERTY_SUFFIX_MAX_LIFE_TIME, -1L);
         cacheProps.put(PROPERTY_PREFIX_CACHE + "pepServiceManager" + PROPERTY_SUFFIX_SIZE, 1024L * 1024 * 10);
-        cacheProps.put(PROPERTY_PREFIX_CACHE + "pepServiceManager" + PROPERTY_SUFFIX_MAX_LIFE_TIME, JiveConstants.MINUTE * 30);
+        cacheProps.put(PROPERTY_PREFIX_CACHE + "pepServiceManager" + PROPERTY_SUFFIX_MAX_LIFE_TIME, Duration.ofMinutes(30).toMillis());
         cacheProps.put(PROPERTY_PREFIX_CACHE + "publishedItems" + PROPERTY_SUFFIX_SIZE, 1024L * 1024 * 10);
-        cacheProps.put(PROPERTY_PREFIX_CACHE + "publishedItems" + PROPERTY_SUFFIX_MAX_LIFE_TIME, JiveConstants.MINUTE * 15);
+        cacheProps.put(PROPERTY_PREFIX_CACHE + "publishedItems" + PROPERTY_SUFFIX_MAX_LIFE_TIME, Duration.ofMinutes(15).toMillis());
         cacheProps.put(PROPERTY_PREFIX_CACHE + "sequences" + PROPERTY_SUFFIX_SIZE, -1L);
         cacheProps.put(PROPERTY_PREFIX_CACHE + "sequences" + PROPERTY_SUFFIX_MAX_LIFE_TIME, -1L);
+        cacheProps.put(PROPERTY_PREFIX_CACHE + "mucPings" + PROPERTY_SUFFIX_SIZE, -1L);
+        cacheProps.put(PROPERTY_PREFIX_CACHE + "mucPings" + PROPERTY_SUFFIX_MAX_LIFE_TIME, Duration.ofMinutes(30).toMillis());
 
         // The JID-based classes (wrappers for Caffeine caches) take their default values from whatever is hardcoded in the JID implementation.
         cacheProps.put(PROPERTY_PREFIX_CACHE + "jidNodeprep" + PROPERTY_SUFFIX_SIZE, JID.NODEPREP_CACHE.policy().eviction().get().getMaximum() );
@@ -291,6 +293,10 @@ public class CacheFactory {
             }
         } );
     }
+
+    // this field is unused, but retains a reference that intends to prevent the monitor from being garbage collected.
+    @SuppressWarnings("unused")
+    private static ConsistencyMonitor consistencyMonitor;
 
     private CacheFactory() {
     }
@@ -480,6 +486,40 @@ public class CacheFactory {
         cache = (T) cacheFactoryStrategy.createCache(name);
 
         log.info("Created cache [" + cacheFactoryStrategy.getClass().getName() + "] for " + name);
+
+        return wrapCache(cache, name);
+    }
+
+    /**
+     * Returns the serializing cache, creating it as necessary. Unlike the caches returned by
+     * {@link #createCache(String)}, the caches returned by this method store data in serialized form (without a
+     * reference to their class).
+     *
+     * The primary benefit of usage of this cache is that the cached data is stored without any references to their
+     * classes. This allows cache content to remain usable after the classes that instantiate the data get reloaded.
+     * This is of particular interest when the cache is used to store data provided by Openfire plugins (as these
+     * classes get loaded by a class loader that is replaced when a plugin gets reloaded or upgraded).
+     *
+     * As compared to other caches, usage of this cache will require more system resources, as the serialized
+     * representation of an object typically is (much) larger than its original (unserialized) form.
+     *
+     * @param name       The name of the cache to create.
+     * @param keyClass   The class of instances used as keys.
+     * @param valueClass The class of instances used as values.
+     * @return the named cache, creating it as necessary.
+     * @see <a href="https://igniterealtime.atlassian.net/browse/OF-2239">Issue OF-2239: Make it easier to cache plugin class instances</a>
+     */
+    @SuppressWarnings("unchecked")
+    public static synchronized SerializingCache createSerializingCache(String name, Class keyClass, Class valueClass) {
+        SerializingCache cache = (SerializingCache) caches.get(name);
+        if (cache != null) {
+            return cache;
+        }
+
+        final Cache<String, String> delegate = (Cache<String, String>) cacheFactoryStrategy.createCache(name);
+        cache = new SerializingCache(delegate, keyClass, valueClass);
+
+        log.info("Created serializing cache [" + cacheFactoryStrategy.getClass().getName() + "] for " + name);
 
         return wrapCache(cache, name);
     }
@@ -771,6 +811,8 @@ public class CacheFactory {
             log.error("Failed to instantiate local cache factory strategy: " + localCacheFactoryClass, e);
              throw new InitializationException(e);
         }
+
+        consistencyMonitor = ConsistencyMonitor.getInstance();
     }
 
     private static ClassLoader getClusteredCacheStrategyClassLoader() {
@@ -803,6 +845,10 @@ public class CacheFactory {
     public static void startClustering() {
         if (isClusteringAvailable()) {
             clusteringStarting = true;
+            // Set session locator to use when in a cluster
+            XMPPServer.getInstance().setRemoteSessionLocator(new RemoteSessionLocatorImpl());
+            // Set packet router to use to deliver packets to remote cluster nodes
+            XMPPServer.getInstance().getRoutingTable().setRemotePacketRouter(new ClusterPacketRouter());
             clusteringStarted = clusteredCacheFactoryStrategy.startCluster();
             clusteringStarting = false;
         }
@@ -834,6 +880,7 @@ public class CacheFactory {
                             public void leftCluster() {
                                 destroyed = true;
                                 ClusterManager.removeListener(this);
+                                log.debug("CacheFactory is not listening for cluster events anymore because it left the cluster");
                             }
 
                             @Override
@@ -875,6 +922,8 @@ public class CacheFactory {
         // Stop the cluster
         clusteredCacheFactoryStrategy.stopCluster();
         clusteredCacheFactoryStrategy = null;
+        XMPPServer.getInstance().setRemoteSessionLocator(null);
+        XMPPServer.getInstance().getRoutingTable().setRemotePacketRouter(null);
         // Set the strategy to local
         cacheFactoryStrategy = localCacheFactoryStrategy;
     }

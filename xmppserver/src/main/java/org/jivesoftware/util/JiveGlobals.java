@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2004-2008 Jive Software. All rights reserved.
+ * Copyright (C) 2004-2008 Jive Software, 2022 Ignite Realtime Foundation. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,30 +16,20 @@
 
 package org.jivesoftware.util;
 
+import org.apache.commons.lang3.StringUtils;
+import org.jivesoftware.database.DbConnectionManager;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import java.io.File;
 import java.io.IOException;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.SQLException;
 import java.text.DateFormat;
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.Date;
-import java.util.HashMap;
-import java.util.Iterator;
-import java.util.List;
-import java.util.Locale;
-import java.util.Map;
+import java.time.Duration;
+import java.util.*;
 import java.util.Map.Entry;
-import java.util.SortedSet;
-import java.util.TimeZone;
-import java.util.TimerTask;
-import java.util.TreeSet;
-
-import org.apache.commons.lang3.StringUtils;
-import org.jivesoftware.database.DbConnectionManager;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
 /**
  * Controls Jive properties. Jive properties are only meant to be set and retrieved
@@ -1299,18 +1289,14 @@ public class JiveGlobals {
                 try {
                     securityProperties = new XMLProperties(home + File.separator + JIVE_SECURITY_FILENAME);
                     setupPropertyEncryption();
-                    TaskEngine.getInstance().schedule(new TimerTask() {
-                        @Override
-                        public void run() {
-                            // Migrate all secure XML properties into the database automatically
-                            for (String propertyName : securityProperties.getAllPropertyNames()) {
-                                if (!propertyName.startsWith(ENCRYPTED_PROPERTY_NAME_PREFIX)) {
-                                    setPropertyEncrypted(propertyName, true);
-                                    securityProperties.migrateProperty(propertyName);
-                                }
-                            }
+
+                    // Migrate all secure XML properties into the database automatically
+                    for (String propertyName : securityProperties.getAllPropertyNames()) {
+                        if (!propertyName.startsWith(ENCRYPTED_PROPERTY_NAME_PREFIX)) {
+                            setPropertyEncrypted(propertyName, true);
+                            securityProperties.migrateProperty(propertyName);
                         }
-                    }, 1000);
+                    }
                 }
                 catch (IOException ioe) {
                     Log.error(ioe.getMessage());

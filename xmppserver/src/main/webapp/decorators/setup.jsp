@@ -70,7 +70,7 @@
                 success = false;
                 errors.put("general","A connection to the database could not be "
                     + "made. View the error message by opening the "
-                    + "\"" + File.separator + "logs" + File.separator + "error.log\" log "
+                    + "\"" + File.separator + "logs" + File.separator + "openfire.log\" log "
                     + "file, then go back to fix the problem.");
             }
             else {
@@ -108,18 +108,16 @@
         <title><fmt:message key="title" /> <fmt:message key="setup.title" />: <decorator:title /></title>
         <link rel="stylesheet" href="style/framework/css/bootstrap.min.css" type="text/css">
         <link rel="stylesheet" href="style/framework/css/font-awesome.min.css" type="text/css">
-        <style type="text/css" title="setupStyle" media="screen">
+        <style title="setupStyle" media="screen">
             @import "../style/global.css";
             @import "../style/setup.css";
             @import "../style/lightbox.css";
         </style>
 
-        <script language="JavaScript" type="text/javascript" src="../js/prototype.js"></script>
-        <script language="JavaScript" type="text/javascript" src="../js/scriptaculous.js"></script>
-        <script language="JavaScript" type="text/javascript" src="../js/lightbox.js"></script>
-        <script language="javascript" type="text/javascript" src="../js/tooltips/domLib.js"></script>
-        <script language="javascript" type="text/javascript" src="../js/tooltips/domTT.js"></script>
-        <script language="javascript" type="text/javascript" src="../js/setup.js"></script>
+        <script src="../js/prototype.js"></script>
+        <script src="../js/scriptaculous.js"></script>
+        <script src="../js/lightbox.js"></script>
+        <script src="../js/setup.js"></script>
         <decorator:head />
     </head>
 
@@ -133,7 +131,7 @@
                 <div id="jive-logo">
                     <a href="/index.jsp"><img src="/images/login_logo.gif" alt="Openfire" width="179" height="53" /></a>
                 </div>
-                <div id="jive-userstatus">
+                <div id="jive-userStatus">
                     <%= AdminConsole.getAppName() %> <%= AdminConsole.getVersionString() %>, build <%= AdminConsole.getGitSHAString() %><br/>
                 </div>
                 <div id="jive-nav">

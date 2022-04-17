@@ -13,6 +13,7 @@
 <%@ page import="org.jivesoftware.admin.LoginLimitManager" %>
 <%@ page import="java.net.URL" %>
 <%@ page import="java.lang.StringBuilder" %>
+<%@ page import="org.slf4j.LoggerFactory" %>
 
 <%@ taglib uri="http://java.sun.com/jsp/jstl/core" prefix="c" %>
 <%@ taglib uri="http://java.sun.com/jsp/jstl/fmt" prefix="fmt" %>
@@ -107,7 +108,7 @@
         try {
             if (secret != null && nodeID != null) {
                 if (StringUtils.hash(AdminConsolePlugin.secret).equals(secret) && ClusterManager.isClusterMember(Base64.decode(nodeID, Base64.URL_SAFE))) {
-                    authToken = new AuthToken(loginUsername);
+                    authToken = AuthToken.generateUserToken(loginUsername);
                 }
                 else {
                     throw new UnauthorizedException("SSO failed. Invalid secret or node ID was provided");
@@ -137,15 +138,15 @@
             }
         }
         catch (ConnectionException ue) {
-            Log.debug(ue);
+            LoggerFactory.getLogger("login.jsp").debug("Error occurred while trying to authenticate user '{}' on the admin console.", username, ue);
             errors.put("connection", LocaleUtils.getLocalizedString("login.failed.connection"));
         }
         catch (InternalUnauthenticatedException ue) {
-            Log.debug(ue);
+            LoggerFactory.getLogger("login.jsp").debug("Error occurred while trying to authenticate user '{}' on the admin console.", username, ue);
             errors.put("authentication", LocaleUtils.getLocalizedString("login.failed.authentication"));
         }
         catch (UnauthorizedException ue) {
-            Log.debug(ue);
+            LoggerFactory.getLogger("login.jsp").debug("Error occurred while trying to authenticate user '{}' on the admin console.", username, ue);
             LoginLimitManager.getInstance().recordFailedAttempt(username, request.getRemoteAddr());
             // Provide a special message if the user provided something containing @
             if (username.contains("@")){
@@ -162,7 +163,7 @@
 
 %>
 
-<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<!DOCTYPE html>
 
 <html>
 <head>
@@ -170,7 +171,7 @@
     <meta http-equiv="X-UA-Compatible" content="IE=edge">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title><%= AdminConsole.getAppName() %> <fmt:message key="login.title" /></title>
-    <script language="JavaScript" type="text/javascript">
+    <script>
         <!--
         // break out of frames
         if (self.parent.frames.length != 0) {
@@ -205,7 +206,7 @@
                         <h3><fmt:message key="admin.console" /></h3>
                         <form action="login.jsp" name="loginForm" method="post">
                             <!-- BEGIN hidden input -->
-                            <%  if (url != null) { try { %> <input type="hidden" name="url" value="<%= StringUtils.escapeForXML(url) %>"> <%  } catch (Exception e) { Log.error(e); } } %>
+                            <%  if (url != null) { %> <input type="hidden" name="url" value="<%= StringUtils.escapeForXML(url) %>"> <% } %>
                             <input type="hidden" name="login" value="true">
                             <input type="hidden" name="csrf" value="${csrf}">
                             <!-- END hidden input -->
@@ -262,7 +263,7 @@
         </div>
     </div>
 
-    <script language="JavaScript" type="text/javascript">
+    <script>
     <!--
         if (document.loginForm.username.value == '')  {
             document.loginForm.username.focus();

@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2004-2008 Jive Software. All rights reserved.
+ * Copyright (C) 2004-2008 Jive Software, 2022 Ignite Realtime Foundation. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,47 +16,22 @@
 
 package org.jivesoftware.openfire.container;
 
-import java.io.File;
-import java.io.IOException;
-import java.net.URL;
-import java.nio.file.Files;
-import java.nio.file.Path;
-import java.nio.file.Paths;
-import java.time.Duration;
-import java.util.ArrayList;
-import java.util.Collections;
-import java.util.List;
-import java.util.TimerTask;
-
 import org.apache.jasper.servlet.JasperInitializer;
 import org.apache.tomcat.InstanceManager;
 import org.apache.tomcat.SimpleInstanceManager;
 import org.eclipse.jetty.annotations.AnnotationConfiguration;
-import org.eclipse.jetty.annotations.ServletContainerInitializersStarter;
+import org.eclipse.jetty.http.HttpHeader;
 import org.eclipse.jetty.plus.annotation.ContainerInitializer;
 import org.eclipse.jetty.plus.webapp.EnvConfiguration;
 import org.eclipse.jetty.plus.webapp.PlusConfiguration;
-import org.eclipse.jetty.server.Connector;
-import org.eclipse.jetty.server.Handler;
-import org.eclipse.jetty.server.HttpConfiguration;
-import org.eclipse.jetty.server.HttpConnectionFactory;
-import org.eclipse.jetty.server.SecureRequestCustomizer;
-import org.eclipse.jetty.server.Server;
-import org.eclipse.jetty.server.ServerConnector;
-import org.eclipse.jetty.server.SslConnectionFactory;
+import org.eclipse.jetty.server.*;
 import org.eclipse.jetty.server.handler.ContextHandlerCollection;
 import org.eclipse.jetty.server.handler.DefaultHandler;
 import org.eclipse.jetty.server.handler.HandlerCollection;
 import org.eclipse.jetty.util.resource.Resource;
 import org.eclipse.jetty.util.ssl.SslContextFactory;
 import org.eclipse.jetty.util.thread.QueuedThreadPool;
-import org.eclipse.jetty.webapp.Configuration;
-import org.eclipse.jetty.webapp.FragmentConfiguration;
-import org.eclipse.jetty.webapp.JettyWebXmlConfiguration;
-import org.eclipse.jetty.webapp.MetaInfConfiguration;
-import org.eclipse.jetty.webapp.WebAppContext;
-import org.eclipse.jetty.webapp.WebInfConfiguration;
-import org.eclipse.jetty.webapp.WebXmlConfiguration;
+import org.eclipse.jetty.webapp.*;
 import org.jivesoftware.openfire.JMXManager;
 import org.jivesoftware.openfire.XMPPServer;
 import org.jivesoftware.openfire.keystore.CertificateStore;
@@ -69,6 +44,18 @@ import org.jivesoftware.util.*;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.io.File;
+import java.io.IOException;
+import java.net.URL;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
+import java.time.Duration;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
+import java.util.TimerTask;
+
 /**
  * The admin console plugin. It starts a Jetty instance on the configured
  * port and loads the admin console web application.
@@ -78,6 +65,56 @@ import org.slf4j.LoggerFactory;
 public class AdminConsolePlugin implements Plugin {
 
     private static final Logger Log = LoggerFactory.getLogger(AdminConsolePlugin.class);
+
+    /**
+     * Enable / Disable parsing a 'X-Forwarded-For' style HTTP header of BOSH requests.
+     */
+    public static final SystemProperty<Boolean> ADMIN_CONSOLE_FORWARDED = SystemProperty.Builder.ofType(Boolean.class)
+        .setKey("adminConsole.forwarded.enabled")
+        .setDynamic(false)
+        .setDefaultValue(false)
+        .addListener(enabled -> ((AdminConsolePlugin) XMPPServer.getInstance().getPluginManager().getPlugin("admin")).restartNeeded = true)
+        .build();
+
+    /**
+     * The HTTP header name for 'forwarded for'
+     */
+    public static final SystemProperty<String> ADMIN_CONSOLE_FORWARDED_FOR = SystemProperty.Builder.ofType(String.class)
+        .setKey("adminConsole.forwarded.for.header")
+        .setDynamic(false)
+        .setDefaultValue(HttpHeader.X_FORWARDED_FOR.toString())
+        .addListener(enabled -> ((AdminConsolePlugin) XMPPServer.getInstance().getPluginManager().getPlugin("admin")).restartNeeded = true)
+        .build();
+
+    /**
+     * The HTTP header name for 'forwarded server'.
+     */
+    public static final SystemProperty<String> ADMIN_CONSOLE_FORWARDED_SERVER = SystemProperty.Builder.ofType(String.class)
+        .setKey("adminConsole.forwarded.server.header")
+        .setDynamic(false)
+        .setDefaultValue(HttpHeader.X_FORWARDED_SERVER.toString())
+        .addListener(enabled -> ((AdminConsolePlugin) XMPPServer.getInstance().getPluginManager().getPlugin("admin")).restartNeeded = true)
+        .build();
+
+    /**
+     * The HTTP header name for 'forwarded hosts'.
+     */
+    public static final SystemProperty<String> ADMIN_CONSOLE_FORWARDED_HOST = SystemProperty.Builder.ofType(String.class)
+        .setKey("adminConsole.forwarded.host.header")
+        .setDynamic(false)
+        .setDefaultValue(HttpHeader.X_FORWARDED_HOST.toString())
+        .addListener(enabled -> ((AdminConsolePlugin) XMPPServer.getInstance().getPluginManager().getPlugin("admin")).restartNeeded = true)
+        .build();
+
+    /**
+     * Sets a forced valued for the host header.
+     */
+    public static final SystemProperty<String> ADMIN_CONSOLE_FORWARDED_HOST_NAME = SystemProperty.Builder.ofType(String.class)
+        .setKey("adminConsole.forwarded.host.name")
+        .setDynamic(false)
+        .setDefaultValue(null)
+        .addListener(enabled -> ((AdminConsolePlugin) XMPPServer.getInstance().getPluginManager().getPlugin("admin")).restartNeeded = true)
+        .build();
 
     /**
      * Random secret used by JVM to allow SSO. Only other cluster nodes can use this secret
@@ -138,6 +175,7 @@ public class AdminConsolePlugin implements Plugin {
 
             // Do not send Jetty info in HTTP headers
             httpConfig.setSendServerVersion( false );
+            configureProxiedConnector(httpConfig);
 
             final ServerConnector httpConnector = new ServerConnector(adminServer, null, null, null, -1, serverThreads, new HttpConnectionFactory(httpConfig));
 
@@ -179,6 +217,7 @@ public class AdminConsolePlugin implements Plugin {
                     httpsConfig.setSecureScheme( "https" );
                     httpsConfig.setSecurePort( adminSecurePort );
                     httpsConfig.addCustomizer( new SecureRequestCustomizer() );
+                    configureProxiedConnector(httpsConfig);
 
                     final HttpConnectionFactory httpConnectionFactory = new HttpConnectionFactory( httpsConfig );
                     final SslConnectionFactory sslConnectionFactory = new SslConnectionFactory( sslContextFactory, org.eclipse.jetty.http.HttpVersion.HTTP_1_1.toString() );
@@ -331,6 +370,36 @@ public class AdminConsolePlugin implements Plugin {
         return restartNeeded;
     }
 
+    private void configureProxiedConnector(HttpConfiguration httpConfig) {
+        // Check to see if we are deployed behind a proxy
+        // Refer to http://eclipse.org/jetty/documentation/current/configuring-connectors.html
+        if (ADMIN_CONSOLE_FORWARDED.getValue()) {
+            ForwardedRequestCustomizer customizer = new ForwardedRequestCustomizer();
+            // default: "X-Forwarded-For"
+            String forwardedForHeader = ADMIN_CONSOLE_FORWARDED_FOR.getValue();
+            if (forwardedForHeader != null) {
+                customizer.setForwardedForHeader(forwardedForHeader);
+            }
+            // default: "X-Forwarded-Server"
+            String forwardedServerHeader = ADMIN_CONSOLE_FORWARDED_SERVER.getValue();
+            if (forwardedServerHeader != null) {
+                customizer.setForwardedServerHeader(forwardedServerHeader);
+            }
+            // default: "X-Forwarded-Host"
+            String forwardedHostHeader = ADMIN_CONSOLE_FORWARDED_HOST.getValue();
+            if (forwardedHostHeader != null) {
+                customizer.setForwardedHostHeader(forwardedHostHeader);
+            }
+            // default: none
+            String hostName = ADMIN_CONSOLE_FORWARDED_HOST_NAME.getValue();
+            if (hostName != null) {
+                customizer.setHostHeader(hostName);
+            }
+
+            httpConfig.addCustomizer(customizer);
+        }
+    }
+
     /**
      * Returns {@code null} if the admin console will be available in all network interfaces of this machine
      * or a String representing the only interface where the admin console will be available.
@@ -409,21 +478,7 @@ public class AdminConsolePlugin implements Plugin {
 
         contexts = new ContextHandlerCollection();
 
-        WebAppContext context;
-        // Add web-app. Check to see if we're in development mode. If so, we don't
-        // add the normal web-app location, but the web-app in the project directory.
-        boolean developmentMode = Boolean.getBoolean("developmentMode");
-        if( developmentMode )
-        {
-            System.out.println(LocaleUtils.getLocalizedString("admin.console.devmode"));
-
-            context = new WebAppContext(contexts, pluginDir.getParentFile().getParentFile().getParentFile().getParent() +
-                    File.separator + "src" + File.separator + "web", "/");
-        }
-        else {
-            context = new WebAppContext(contexts, pluginDir.getAbsoluteFile() + File.separator + "webapp",
-                    "/");
-        }
+        WebAppContext context = new WebAppContext(contexts, pluginDir.getAbsoluteFile() + File.separator + "webapp", "/");
 
         // Ensure the JSP engine is initialized correctly (in order to be able to cope with Tomcat/Jasper precompiled JSPs).
         final List<ContainerInitializer> initializers = new ArrayList<>();
@@ -446,12 +501,6 @@ public class AdminConsolePlugin implements Plugin {
         // The index.html includes a redirect to the index.jsp and doesn't bypass
         // the context security when in development mode
         context.setWelcomeFiles(new String[]{"index.html"});
-
-        // Make sure the context initialization is done when in development mode
-        if( developmentMode )
-        {
-            context.addBean( new ServletContainerInitializersStarter( context ), true );
-        }
     }
 
     private void log(String string) {
@@ -511,7 +560,7 @@ public class AdminConsolePlugin implements Plugin {
             }
         };
 
-        TaskEngine.getInstance().schedule(reenableTask, pause.toMillis());
+        TaskEngine.getInstance().schedule(reenableTask, pause);
     }
 
     /**

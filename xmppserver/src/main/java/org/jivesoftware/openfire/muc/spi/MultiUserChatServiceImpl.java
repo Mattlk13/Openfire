@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2004-2008 Jive Software. All rights reserved.
+ * Copyright (C) 2004-2008 Jive Software, 2021-2022 Ignite Realtime Foundation. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,47 +16,32 @@
 
 package org.jivesoftware.openfire.muc.spi;
 
-import com.google.common.collect.Interner;
-import com.google.common.collect.Interners;
 import org.dom4j.DocumentHelper;
 import org.dom4j.Element;
-import org.jivesoftware.openfire.PacketRouter;
+import org.dom4j.QName;
+import org.jivesoftware.openfire.PacketException;
 import org.jivesoftware.openfire.RoutingTable;
 import org.jivesoftware.openfire.XMPPServer;
 import org.jivesoftware.openfire.XMPPServerListener;
 import org.jivesoftware.openfire.archive.Archiver;
 import org.jivesoftware.openfire.auth.UnauthorizedException;
+import org.jivesoftware.openfire.cluster.ClusterEventListener;
 import org.jivesoftware.openfire.cluster.ClusterManager;
-import org.jivesoftware.openfire.disco.DiscoInfoProvider;
-import org.jivesoftware.openfire.disco.DiscoItem;
-import org.jivesoftware.openfire.disco.DiscoItemsProvider;
-import org.jivesoftware.openfire.disco.DiscoServerItem;
-import org.jivesoftware.openfire.disco.IQDiscoInfoHandler;
-import org.jivesoftware.openfire.disco.ServerItemsProvider;
+import org.jivesoftware.openfire.cluster.NodeID;
+import org.jivesoftware.openfire.disco.*;
 import org.jivesoftware.openfire.group.ConcurrentGroupList;
 import org.jivesoftware.openfire.group.GroupAwareList;
 import org.jivesoftware.openfire.group.GroupJID;
 import org.jivesoftware.openfire.handler.IQHandler;
 import org.jivesoftware.openfire.handler.IQPingHandler;
-import org.jivesoftware.openfire.muc.HistoryStrategy;
-import org.jivesoftware.openfire.muc.MUCEventDelegate;
-import org.jivesoftware.openfire.muc.MUCEventDispatcher;
-import org.jivesoftware.openfire.muc.MUCRole;
-import org.jivesoftware.openfire.muc.MUCRoom;
-import org.jivesoftware.openfire.muc.MUCUser;
-import org.jivesoftware.openfire.muc.MultiUserChatService;
-import org.jivesoftware.openfire.muc.NotAllowedException;
-import org.jivesoftware.openfire.muc.cluster.GetNumberConnectedUsers;
-import org.jivesoftware.openfire.muc.cluster.OccupantAddedEvent;
-import org.jivesoftware.openfire.muc.cluster.RoomAvailableEvent;
-import org.jivesoftware.openfire.muc.cluster.RoomRemovedEvent;
+import org.jivesoftware.openfire.muc.*;
+import org.jivesoftware.openfire.muc.cluster.SyncLocalOccupantsAndSendJoinPresenceTask;
+import org.jivesoftware.openfire.stanzaid.StanzaIDUtil;
+import org.jivesoftware.openfire.user.UserAlreadyExistsException;
 import org.jivesoftware.openfire.user.UserManager;
-import org.jivesoftware.util.AutoCloseableReentrantLock;
-import org.jivesoftware.util.JiveGlobals;
-import org.jivesoftware.util.JiveProperties;
-import org.jivesoftware.util.LocaleUtils;
-import org.jivesoftware.util.TaskEngine;
-import org.jivesoftware.util.XMPPDateTimeFormat;
+import org.jivesoftware.openfire.user.UserNotFoundException;
+import org.jivesoftware.util.*;
+import org.jivesoftware.util.cache.Cache;
 import org.jivesoftware.util.cache.CacheFactory;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -65,12 +50,7 @@ import org.xmpp.component.ComponentManager;
 import org.xmpp.forms.DataForm;
 import org.xmpp.forms.DataForm.Type;
 import org.xmpp.forms.FormField;
-import org.xmpp.packet.IQ;
-import org.xmpp.packet.JID;
-import org.xmpp.packet.Message;
-import org.xmpp.packet.Packet;
-import org.xmpp.packet.PacketError;
-import org.xmpp.packet.Presence;
+import org.xmpp.packet.*;
 import org.xmpp.resultsetmanagement.ResultSet;
 
 import javax.annotation.Nonnull;
@@ -78,13 +58,14 @@ import javax.annotation.Nullable;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.*;
-import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.locks.Lock;
 import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
 /**
  * Implements the chat server as a cached memory resident chat server. The server is also
@@ -103,17 +84,14 @@ import java.util.stream.Collectors;
  * @author Gaston Dombiak
  */
 public class MultiUserChatServiceImpl implements Component, MultiUserChatService,
-        ServerItemsProvider, DiscoInfoProvider, DiscoItemsProvider, XMPPServerListener
+    ServerItemsProvider, DiscoInfoProvider, DiscoItemsProvider, XMPPServerListener, ClusterEventListener
 {
     private static final Logger Log = LoggerFactory.getLogger(MultiUserChatServiceImpl.class);
-
-    private static final Interner<String> roomBaseMutex = Interners.newWeakInterner();
-    private static final Interner<JID> jidBaseMutex = Interners.newWeakInterner();
 
     /**
      * The time to elapse between clearing of idle chat users.
      */
-    private Duration userIdleTaskInterval = Duration.ofMinutes(5);
+    private Duration userIdleTaskInterval;
 
     /**
      * The period that a user must be idle before he/she gets kicked from all the rooms. Null to disable the feature.
@@ -159,25 +137,19 @@ public class MultiUserChatServiceImpl implements Component, MultiUserChatService
     private String chatDescription;
 
     /**
-     * LocalMUCRoom chat manager which supports simple chatroom management
+     * Responsible for maintaining the in-memory collection of MUCRooms for this service.
      */
-    private final LocalMUCRoomManager localMUCRoomManager = new LocalMUCRoomManager();
+    private final LocalMUCRoomManager localMUCRoomManager;
 
     /**
-     * Chat users managed by this manager. This includes only users connected to this JVM.
-     * That means that when running inside of a cluster each node will have its own manager
-     * that in turn will keep its own list of locally connected.
-     *
-     * table: key user jid (XMPPAddress); value ChatUser
+     * Responsible for maintaining the in-memory collection of MUCUsers for this service.
      */
-    private final Map<JID, LocalMUCUser> users = new ConcurrentHashMap<>();
+    private final OccupantManager occupantManager;
+
     private final HistoryStrategy historyStrategy;
 
     private RoutingTable routingTable = null;
-    /**
-     * The packet router for the server.
-     */
-    private PacketRouter router = null;
+
     /**
      * The handler of packets with namespace jabber:iq:register for the server.
      */
@@ -301,6 +273,17 @@ public class MultiUserChatServiceImpl implements Component, MultiUserChatService
     private final List<Element> extraDiscoIdentities = new ArrayList<>();
 
     /**
+     * Briefly holds stanza IDs and recipients of IQ ping requests, sent to determine if an occupant is still present in
+     * the room ('ghost user' detection). Maps a stanza ID to the JID that has been pinged. Note that the stanza ID
+     * value should be unique, to not overwrite others.
+     *
+     * The eviction time of entries is short, so that we do not need to bother with manual cache evictions.
+     *
+     * The same cache can be used for all MUC services as there is no service or room-specific data in the cache.
+     */
+    private static final Cache<String, JID> PINGS_SENT = CacheFactory.createCache("MUC Service Pings Sent");
+
+    /**
      * Create a new group chat server.
      *
      * @param subdomain
@@ -328,6 +311,15 @@ public class MultiUserChatServiceImpl implements Component, MultiUserChatService
         }
         this.isHidden = isHidden;
         historyStrategy = new HistoryStrategy(null);
+
+        localMUCRoomManager = new LocalMUCRoomManager(this);
+        occupantManager = new OccupantManager(this);
+    }
+
+    @Override
+    @Nonnull
+    public OccupantManager getOccupantManager() {
+        return occupantManager;
     }
 
     @Override
@@ -368,26 +360,21 @@ public class MultiUserChatServiceImpl implements Component, MultiUserChatService
         // service. This means that, for instance, a disco request should be responded by the
         // service itself instead of relying on the server to handle the request.
         try {
+            // Check for IQ Ping responses
+            if (isPendingPingResponse(packet)) {
+                Log.debug("Ping response received from occupant '{}', addressed to: '{}'", packet.getFrom(), packet.getTo());
+                return;
+            }
+            // Check for 'ghost' users (OF-910 / OF-2209 / OF-2369)
+            if (isDeliveryRelatedErrorResponse(packet)) {
+                Log.info("Received a stanza that contained a delivery-related error response from {}. This is indicative of a 'ghost' user. Removing this user from all chat rooms.", packet.getFrom());
+                removeChatUser(packet.getFrom());
+                return;
+            }
             // Check if the packet is a disco request or a packet with namespace iq:register
             if (packet instanceof IQ) {
                 if (process((IQ)packet)) {
                     Log.trace( "Done processing IQ stanza." );
-                    return;
-                }
-            } else if (packet instanceof Message) {
-                final Message msg = (Message) packet;
-                if (msg.getType() == Message.Type.error) {
-                    // Bounced message, drop user.
-                    removeUser(packet.getFrom());
-                    Log.trace( "Done processing Message stanza." );
-                    return;
-                }
-            } else if (packet instanceof Presence) {
-                final Presence pres = (Presence) packet;
-                if (pres.getType() == Presence.Type.error) {
-                    // Bounced presence, drop user.
-                    removeUser(packet.getFrom());
-                    Log.trace( "Done processing Presence stanza." );
                     return;
                 }
             }
@@ -400,7 +387,7 @@ public class MultiUserChatServiceImpl implements Component, MultiUserChatService
                     final IQ reply = IQ.createResultIQ( (IQ) packet );
                     reply.setChildElement( ((IQ) packet).getChildElement().createCopy() );
                     reply.setError( PacketError.Condition.feature_not_implemented );
-                    router.route( reply );
+                    XMPPServer.getInstance().getPacketRouter().route( reply );
                 }
                 Log.debug( "Ignoring stanza addressed at conference service: {}", packet.toXML() );
             }
@@ -410,20 +397,33 @@ public class MultiUserChatServiceImpl implements Component, MultiUserChatService
                 final JID recipient = packet.getTo();
                 final String roomName = recipient != null ? recipient.getNode() : null;
                 final JID userJid = packet.getFrom();
+                occupantManager.registerActivity(userJid);
                 Log.trace( "Stanza recipient: {}, room name: {}, sender: {}", recipient, roomName, userJid );
                 try (final AutoCloseableReentrantLock.AutoCloseableLock ignored = new AutoCloseableReentrantLock(MultiUserChatServiceImpl.class, userJid.toString()).lock()) {
                     if ( !packet.getElement().elements(FMUCHandler.FMUC).isEmpty() ) {
                         Log.trace( "Stanza is a FMUC stanza." );
-                        final MUCRoom chatRoom = getChatRoom(roomName);
-                        if ( chatRoom != null ) {
-                            chatRoom.getFmucHandler().process(packet);
+                        if (roomName == null) {
+                            Log.warn("Unable to process FMUC stanza, as it does not address a room: {}", packet.toXML());
                         } else {
-                            Log.warn( "Unable to process FMUC stanza, as room it's addressed to does not exist: {}", roomName );
-                            // FIXME need to send error back in case of IQ request, and FMUC join. Might want to send error back in other cases too.
+                            final Lock lock = getChatRoomLock(roomName);
+                            lock.lock();
+                            try {
+                                final MUCRoom chatRoom = getChatRoom(roomName);
+                                if (chatRoom != null) {
+                                    chatRoom.getFmucHandler().process(packet);
+                                    // Ensure that other cluster nodes see the changes applied by the method above.
+                                    syncChatRoom(chatRoom);
+                                } else {
+                                    Log.warn("Unable to process FMUC stanza, as room it's addressed to does not exist: {}", roomName);
+                                    // FIXME need to send error back in case of IQ request, and FMUC join. Might want to send error back in other cases too.
+                                }
+                            } finally {
+                                lock.unlock();
+                            }
                         }
                     } else {
                         Log.trace( "Stanza is a regular MUC stanza." );
-                        getChatUser(userJid, roomName).process(packet);
+                        processRegularStanza(packet);
                     }
                 }
             }
@@ -456,34 +456,34 @@ public class MultiUserChatServiceImpl implements Component, MultiUserChatService
         }
         if ("jabber:iq:register".equals(namespace)) {
             final IQ reply = registerHandler.handleIQ(iq);
-            router.route(reply);
+            XMPPServer.getInstance().getPacketRouter().route(reply);
         }
         else if ("jabber:iq:search".equals(namespace)) {
             final IQ reply = searchHandler.handleIQ(iq);
-            router.route(reply);
+            XMPPServer.getInstance().getPacketRouter().route(reply);
         }
         else if (IQMuclumbusSearchHandler.NAMESPACE.equals(namespace)) {
             final IQ reply = muclumbusSearchHandler.handleIQ(iq);
-            router.route(reply);
+            XMPPServer.getInstance().getPacketRouter().route(reply);
         }
         else if (IQMUCvCardHandler.NAMESPACE.equals(namespace)) {
             final IQ reply = mucVCardHandler.handleIQ(iq);
-            router.route(reply);
+            XMPPServer.getInstance().getPacketRouter().route(reply);
         }
         else if ("http://jabber.org/protocol/disco#info".equals(namespace)) {
             // TODO MUC should have an IQDiscoInfoHandler of its own when MUC becomes
             // a component
             final IQ reply = XMPPServer.getInstance().getIQDiscoInfoHandler().handleIQ(iq);
-            router.route(reply);
+            XMPPServer.getInstance().getPacketRouter().route(reply);
         }
         else if ("http://jabber.org/protocol/disco#items".equals(namespace)) {
             // TODO MUC should have an IQDiscoItemsHandler of its own when MUC becomes
             // a component
             final IQ reply = XMPPServer.getInstance().getIQDiscoItemsHandler().handleIQ(iq);
-            router.route(reply);
+            XMPPServer.getInstance().getPacketRouter().route(reply);
         }
         else if ("urn:xmpp:ping".equals(namespace)) {
-            router.route( IQ.createResultIQ(iq) );
+            XMPPServer.getInstance().getPacketRouter().route( IQ.createResultIQ(iq) );
         }
         else if (this.iqHandlers != null) {
             final IQHandler h = this.iqHandlers.get(namespace);
@@ -491,13 +491,13 @@ public class MultiUserChatServiceImpl implements Component, MultiUserChatService
                 try {
                     final IQ reply = h.handleIQ(iq);
                     if (reply != null) {
-                        router.route(reply);
+                        XMPPServer.getInstance().getPacketRouter().route(reply);
                     }
                 } catch (final UnauthorizedException e) {
                     final IQ reply = IQ.createResultIQ(iq);
                     reply.setType(IQ.Type.error);
                     reply.setError(PacketError.Condition.service_unavailable);
-                    router.route(reply);
+                    XMPPServer.getInstance().getPacketRouter().route(reply);
                 }
                 return true;
             }
@@ -508,15 +508,949 @@ public class MultiUserChatServiceImpl implements Component, MultiUserChatService
         return true;
     }
 
+    /**
+     * Generate and send an error packet to indicate that something went wrong.
+     *
+     * @param packet  the packet to be responded to with an error.
+     * @param error   the reason why the operation failed.
+     * @param message an optional human-readable error message.
+     */
+    private void sendErrorPacket( Packet packet, PacketError.Condition error, String message )
+    {
+        if (packet.getError() != null) {
+            Log.debug("Avoid generating an error in response to a stanza that itself has an error (to avoid the chance of entering an endless back-and-forth of exchanging errors). Suppress sending an {} error (with message '{}') in response to: {}", error, message, packet);
+            return;
+        }
+        if ( packet instanceof IQ )
+        {
+            IQ reply = IQ.createResultIQ((IQ) packet);
+            reply.setChildElement(((IQ) packet).getChildElement().createCopy());
+            reply.setError(error);
+            if ( message != null )
+            {
+                reply.getError().setText(message);
+            }
+            XMPPServer.getInstance().getPacketRouter().route(reply);
+        }
+        else
+        {
+            Packet reply = packet.createCopy();
+            reply.setError(error);
+            if ( message != null )
+            {
+                reply.getError().setText(message);
+            }
+            reply.setFrom(packet.getTo());
+            reply.setTo(packet.getFrom());
+            XMPPServer.getInstance().getPacketRouter().route(reply);
+        }
+    }
+
+    /**
+     * This method does all stanz routing in the chat server for 'regular' MUC stanzas. Packet routing is actually very
+     * simple:
+     *
+     * <ul>
+     *   <li>Discover the room the user is talking to</li>
+     *   <li>If the room is not registered and this is a presence "available" packet, try to join the room</li>
+     *   <li>If the room is registered, and presence "unavailable" leave the room</li>
+     *   <li>Otherwise, rewrite the sender address and send to the room.</li>
+     * </ul>
+     *
+     * @param packet The stanza to route
+     */
+    public void processRegularStanza( Packet packet ) throws UnauthorizedException, PacketException
+    {
+        // Name of the room that the stanza is addressed to.
+        final String roomName = packet.getTo().getNode();
+
+        if ( roomName == null )
+        {
+            // Packets to the groupchat service (as opposed to a specific room on the service). This should not occur
+            // (should be handled by MultiUserChatServiceImpl instead).
+            Log.warn(LocaleUtils.getLocalizedString("muc.error.not-supported") + " " + packet.toString());
+            if ( packet instanceof IQ && ((IQ) packet).isRequest() )
+            {
+                sendErrorPacket(packet, PacketError.Condition.feature_not_implemented, "Unable to process stanza.");
+            }
+            return;
+        }
+
+        StanzaIDUtil.ensureUniqueAndStableStanzaID(packet, packet.getTo().asBareJID());
+
+        final Lock lock = getChatRoomLock(roomName);
+        lock.lock();
+        try {
+            // Get the room, if one exists.
+            @Nullable MUCRoom room = getChatRoom(roomName);
+
+            // Determine if this user has a pre-existing role in the addressed room.
+            final MUCRole preExistingRole;
+            if (room == null) {
+                preExistingRole = null;
+            } else {
+                preExistingRole = room.getOccupantByFullJID(packet.getFrom());
+            }
+            Log.debug("Preexisting role for user {} in room {} (that currently {} exist): {}", packet.getFrom(), roomName, room == null ? "does not" : "does", preExistingRole == null ? "(none)" : preExistingRole);
+
+            if ( packet instanceof IQ )
+            {
+                process((IQ) packet, room, preExistingRole);
+            }
+            else if ( packet instanceof Message )
+            {
+                process((Message) packet, room, preExistingRole);
+            }
+            else if ( packet instanceof Presence )
+            {
+                // Return value is non-null while argument is, in case this is a request to create a new room.
+                room = process((Presence) packet, roomName, room, preExistingRole);
+
+            }
+
+            // Ensure that other cluster nodes see any changes that might have been applied.
+            if (room != null) {
+                syncChatRoom(room);
+            }
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    /**
+     * Processes a Message stanza.
+     *
+     * @param packet          The stanza to route
+     * @param room            The room that the stanza was addressed to.
+     * @param preExistingRole The role of this user in the addressed room prior to processing of this stanza, if any.
+     */
+    private void process(
+        @Nonnull final Message packet,
+        @Nullable final MUCRoom room,
+        @Nullable final MUCRole preExistingRole )
+    {
+        if (Message.Type.error == packet.getType()) {
+            Log.trace("Ignoring messages of type 'error' sent by '{}' to MUC room '{}'", packet.getFrom(), packet.getTo());
+            return;
+        }
+
+        if (room == null) {
+            Log.debug("Rejecting message stanza sent by '{}' to room '{}': Room does not exist.", packet.getFrom(), packet.getTo());
+            sendErrorPacket(packet, PacketError.Condition.recipient_unavailable, "The room that the message was addressed to is not available.");
+            return;
+        }
+
+        if ( preExistingRole == null )
+        {
+            processNonOccupantMessage(packet, room);
+        }
+        else
+        {
+            processOccupantMessage(packet, room, preExistingRole);
+        }
+    }
+
+    /**
+     * Processes a Message stanza that was sent by a user that's not in the room.
+     *
+     * Only declined invitations (to join a room) are acceptable messages from users that are not in the room. Other
+     * messages are responded to with an error.
+     *
+     * @param packet   The stanza to process
+     * @param room     The room that the stanza was addressed to.
+     */
+    private void processNonOccupantMessage(
+        @Nonnull final Message packet,
+        @Nonnull final MUCRoom room )
+    {
+        boolean declinedInvitation = false;
+        Element userInfo = null;
+        if ( Message.Type.normal == packet.getType() )
+        {
+            // An user that is not an occupant could be declining an invitation
+            userInfo = packet.getChildElement("x", "http://jabber.org/protocol/muc#user");
+            if ( userInfo != null && userInfo.element("decline") != null )
+            {
+                // A user has declined an invitation to a room
+                // WARNING: Potential fraud if someone fakes the "from" of the
+                // message with the JID of a member and sends a "decline"
+                declinedInvitation = true;
+            }
+        }
+
+        if ( declinedInvitation )
+        {
+            Log.debug("Processing room invitation declination sent by '{}' to room '{}'.", packet.getFrom(), room.getName());
+            final Element info = userInfo.element("decline");
+            room.sendInvitationRejection(
+                new JID(info.attributeValue("to")),
+                info.elementTextTrim("reason"),
+                packet.getFrom());
+        }
+        else
+        {
+            Log.debug("Rejecting message stanza sent by '{}' to room '{}': Sender is not an occupant of the room: {}", packet.getFrom(), room.getName(), packet.toXML());
+            sendErrorPacket(packet, PacketError.Condition.not_acceptable, "You are not in the room.");
+        }
+    }
+
+    /**
+     * Processes a Message stanza that was sent by a user that's in the room.
+     *
+     * @param packet          The stanza to process
+     * @param room            The room that the stanza was addressed to.
+     * @param preExistingRole The role of this user in the addressed room prior to processing of this stanza, if any.
+     */
+    private void processOccupantMessage(
+        @Nonnull final Message packet,
+        @Nonnull final MUCRoom room,
+        @Nonnull final MUCRole preExistingRole )
+    {
+        // Check and reject conflicting packets with conflicting roles In other words, another user already has this nickname
+        if ( !preExistingRole.getUserAddress().equals(packet.getFrom()) )
+        {
+            Log.debug("Rejecting conflicting stanza with conflicting roles: {}", packet.toXML());
+            sendErrorPacket(packet, PacketError.Condition.conflict, "Another user uses this nickname.");
+            return;
+        }
+
+        if (room.getRoomHistory().isSubjectChangeRequest(packet))
+        {
+            processChangeSubjectMessage(packet, room, preExistingRole);
+            return;
+        }
+
+        // An occupant is trying to send a private message, send public message, invite someone to the room or reject an invitation.
+        final Message.Type type = packet.getType();
+        String nickname = packet.getTo().getResource();
+        if ( nickname == null || nickname.trim().length() == 0 )
+        {
+            nickname = null;
+        }
+
+        // Public message (not addressed to a specific occupant)
+        if ( nickname == null && Message.Type.groupchat == type )
+        {
+            processPublicMessage(packet, room, preExistingRole);
+            return;
+        }
+
+        // Private message (addressed to a specific occupant)
+        if ( nickname != null && (Message.Type.chat == type || Message.Type.normal == type) )
+        {
+            processPrivateMessage(packet, room, preExistingRole);
+            return;
+        }
+
+        if ( nickname == null && Message.Type.normal == type )
+        {
+            // An occupant could be sending an invitation or declining an invitation
+            final Element userInfo = packet.getChildElement("x", "http://jabber.org/protocol/muc#user");
+
+            if ( userInfo != null && userInfo.element("invite") != null )
+            {
+                // An occupant is sending invitations
+                processSendingInvitationMessage(packet, room, preExistingRole);
+                return;
+            }
+
+            if ( userInfo != null && userInfo.element("decline") != null )
+            {
+                // An occupant has declined an invitation
+                processDecliningInvitationMessage(packet, room);
+                return;
+            }
+        }
+
+        Log.debug("Unable to process message: {}", packet.toXML());
+        sendErrorPacket(packet, PacketError.Condition.bad_request, "Unable to process message.");
+    }
+
+    /**
+     * Process a 'change subject' message sent by an occupant of the room.
+     *
+     * @param packet          The stanza to process
+     * @param room            The room that the stanza was addressed to.
+     * @param preExistingRole The role of this user in the addressed room prior to processing of this stanza, if any.
+     */
+    private void processChangeSubjectMessage(
+        @Nonnull final Message packet,
+        @Nonnull final MUCRoom room,
+        @Nonnull final MUCRole preExistingRole )
+    {
+        Log.trace("Processing subject change request from occupant '{}' to room '{}'.", packet.getFrom(), room.getName());
+        try
+        {
+            room.changeSubject(packet, preExistingRole);
+        }
+        catch ( ForbiddenException e )
+        {
+            Log.debug("Rejecting subject change request from occupant '{}' to room '{}'.", packet.getFrom(), room.getName(), e);
+            sendErrorPacket(packet, PacketError.Condition.forbidden, "You are not allowed to change the subject of this room.");
+        }
+    }
+
+    /**
+     * Process a public message sent by an occupant of the room.
+     *
+     * @param packet          The stanza to process
+     * @param room            The room that the stanza was addressed to.
+     * @param preExistingRole The role of this user in the addressed room prior to processing of this stanza, if any.
+     */
+    private void processPublicMessage(
+        @Nonnull final Message packet,
+        @Nonnull final MUCRoom room,
+        @Nonnull final MUCRole preExistingRole )
+    {
+        Log.trace("Processing public message from occupant '{}' to room '{}'.", packet.getFrom(), room.getName());
+        try
+        {
+            room.sendPublicMessage(packet, preExistingRole);
+        }
+        catch ( ForbiddenException e )
+        {
+            Log.debug("Rejecting public message from occupant '{}' to room '{}'. User is not allowed to send message (might not have voice).", packet.getFrom(), room.getName(), e);
+            sendErrorPacket(packet, PacketError.Condition.forbidden, "You are not allowed to send a public message to the room (you might require 'voice').");
+        }
+    }
+
+    /**
+     * Process a private message sent by an occupant of the room.
+     *
+     * @param packet          The stanza to process
+     * @param room            The room that the stanza was addressed to.
+     * @param preExistingRole The role of this user in the addressed room prior to processing of this stanza, if any.
+     */
+    private void processPrivateMessage(
+        @Nonnull final Message packet,
+        @Nonnull final MUCRoom room,
+        @Nonnull final MUCRole preExistingRole )
+    {
+        Log.trace("Processing private message from occupant '{}' to room '{}'.", packet.getFrom(), room.getName());
+        try
+        {
+            room.sendPrivatePacket(packet, preExistingRole);
+        }
+        catch ( ForbiddenException e )
+        {
+            Log.debug("Rejecting private message from occupant '{}' to room '{}'. User has a role that disallows sending private messages in this room.", packet.getFrom(), room.getName(), e);
+            sendErrorPacket(packet, PacketError.Condition.forbidden, "You are not allowed to send a private messages in the room.");
+        }
+        catch ( NotFoundException e )
+        {
+            Log.debug("Rejecting private message from occupant '{}' to room '{}'. User addressing a non-existent recipient.", packet.getFrom(), room.getName(), e);
+            sendErrorPacket(packet, PacketError.Condition.recipient_unavailable, "The intended recipient of your private message is not available.");
+        }
+    }
+
+    /**
+     * Process a room-invitation message sent by an occupant of the room.
+     *
+     * @param packet          The stanza to process
+     * @param room            The room that the stanza was addressed to.
+     * @param preExistingRole The role of this user in the addressed room prior to processing of this stanza, if any.
+     */
+    private void processSendingInvitationMessage(
+        @Nonnull final Message packet,
+        @Nonnull final MUCRoom room,
+        @Nonnull final MUCRole preExistingRole )
+    {
+        Log.trace("Processing an invitation message from occupant '{}' to room '{}'.", packet.getFrom(), room.getName());
+        try
+        {
+            final Element userInfo = packet.getChildElement("x", "http://jabber.org/protocol/muc#user");
+
+            // Try to keep the list of extensions sent together with the message invitation. These extensions will be sent to the invitees.
+            final List<Element> extensions = new ArrayList<>(packet.getElement().elements());
+            extensions.remove(userInfo);
+
+            // Send invitations to invitees
+            final Iterator<Element> it = userInfo.elementIterator("invite");
+            while ( it.hasNext() )
+            {
+                Element info = it.next();
+                JID jid = new JID(info.attributeValue("to"));
+
+                // Add the user as a member of the room if the room is members only
+                if (room.isMembersOnly())
+                {
+                    room.addMember(jid, null, preExistingRole);
+                }
+
+                // Send the invitation to the invitee
+                room.sendInvitation(jid, info.elementTextTrim("reason"), preExistingRole, extensions);
+            }
+        }
+        catch ( ForbiddenException e )
+        {
+            Log.debug("Rejecting invitation message from occupant '{}' in room '{}': Invitations are not allowed, or occupant is not allowed to modify the member list.", packet.getFrom(), room.getName(), e);
+            sendErrorPacket(packet, PacketError.Condition.forbidden, "This room disallows invitations to be sent, or you're not allowed to modify the member list of this room.");
+        }
+        catch ( ConflictException e )
+        {
+            Log.debug("Rejecting invitation message from occupant '{}' in room '{}'.", packet.getFrom(), room.getName(), e);
+            sendErrorPacket(packet, PacketError.Condition.conflict, "An unexpected exception occurred."); // TODO Is this code reachable?
+        }
+        catch ( CannotBeInvitedException e )
+        {
+            Log.debug("Rejecting invitation message from occupant '{}' in room '{}': The user being invited does not have access to the room.", packet.getFrom(), room.getName(), e);
+            sendErrorPacket(packet, PacketError.Condition.not_acceptable, "The user being invited does not have access to the room.");
+        }
+    }
+
+    /**
+     * Process a declination of a room-invitation message sent by an occupant of the room.
+     *
+     * @param packet          The stanza to process
+     * @param room            The room that the stanza was addressed to.
+     */
+    private void processDecliningInvitationMessage(
+        @Nonnull final Message packet,
+        @Nonnull final MUCRoom room)
+    {
+        Log.trace("Processing an invite declination message from '{}' to room '{}'.", packet.getFrom(), room.getName());
+        final Element info = packet.getChildElement("x", "http://jabber.org/protocol/muc#user").element("decline");
+        room.sendInvitationRejection(new JID(info.attributeValue("to")),
+            info.elementTextTrim("reason"), packet.getFrom());
+    }
+
+    /**
+     * Processes an IQ stanza.
+     *
+     * @param packet          The stanza to route
+     * @param room            The room that the stanza was addressed to.
+     * @param preExistingRole The role of this user in the addressed room prior to processing of this stanza, if any.
+     */
+    private void process(
+        @Nonnull final IQ packet,
+        @Nullable final MUCRoom room,
+        @Nullable final MUCRole preExistingRole )
+    {
+        // Packets to a specific node/group/room
+        if ( preExistingRole == null || room == null)
+        {
+            Log.debug("Ignoring stanza received from a non-occupant of a room (room might not even exist): {}", packet.toXML());
+            if ( packet.isRequest() )
+            {
+                // If a non-occupant sends a disco to an address of the form <room@service/nick>, a MUC service MUST
+                // return a <bad-request/> error. http://xmpp.org/extensions/xep-0045.html#disco-occupant
+                sendErrorPacket(packet, PacketError.Condition.bad_request, "You are not an occupant of this room.");
+            }
+            return;
+        }
+
+        if ( packet.isResponse() )
+        {
+            // Only process IQ result packet if it's a private packet sent to another room occupant
+            if ( packet.getTo().getResource() != null )
+            {
+                try
+                {
+                    // User is sending an IQ result packet to another room occupant
+                    room.sendPrivatePacket(packet, preExistingRole);
+                }
+                catch ( NotFoundException | ForbiddenException e )
+                {
+                    // Do nothing. No error will be sent to the sender of the IQ result packet
+                    Log.debug("Silently ignoring an IQ response sent to the room as a private message that caused an exception while being processed: {}", packet.toXML(), e);
+                }
+            }
+            else
+            {
+                Log.trace("Silently ignoring an IQ response sent to the room, but not as a private message: {}", packet.toXML());
+            }
+        }
+        else
+        {
+            // Check and reject conflicting packets with conflicting roles In other words, another user already has this nickname
+            if ( !preExistingRole.getUserAddress().equals(packet.getFrom()) )
+            {
+                Log.debug("Rejecting conflicting stanza with conflicting roles: {}", packet.toXML());
+                sendErrorPacket(packet, PacketError.Condition.conflict, "Another user uses this nickname.");
+                return;
+            }
+
+            try
+            {
+                // TODO Analyze if it is correct for these first two blocks to be processed without evaluating if they're addressed to the room or if they're a PM.
+                Element query = packet.getElement().element("query");
+                if ( query != null && "http://jabber.org/protocol/muc#owner".equals(query.getNamespaceURI()) )
+                {
+                    room.getIQOwnerHandler().handleIQ(packet, preExistingRole);
+                }
+                else if ( query != null && "http://jabber.org/protocol/muc#admin".equals(query.getNamespaceURI()) )
+                {
+                    room.getIQAdminHandler().handleIQ(packet, preExistingRole);
+                }
+                else
+                {
+                    final String toNickname = packet.getTo().getResource();
+                    if ( toNickname != null )
+                    {
+                        // User is sending to a room occupant.
+                        final boolean selfPingEnabled = JiveGlobals.getBooleanProperty("xmpp.muc.self-ping.enabled", true);
+                        if ( selfPingEnabled && toNickname.equals(preExistingRole.getNickname()) && packet.isRequest()
+                            && packet.getElement().element(QName.get(IQPingHandler.ELEMENT_NAME, IQPingHandler.NAMESPACE)) != null )
+                        {
+                            Log.trace("User '{}' is sending an IQ 'ping' to itself. See XEP-0410: MUC Self-Ping (Schrödinger's Chat).", packet.getFrom());
+                            XMPPServer.getInstance().getPacketRouter().route(IQ.createResultIQ(packet));
+                        }
+                        else
+                        {
+                            Log.trace("User '{}' is sending an IQ stanza to another room occupant (as a PM) with nickname: '{}'.", packet.getFrom(), toNickname);
+                            room.sendPrivatePacket(packet, preExistingRole);
+                        }
+                    }
+                    else
+                    {
+                        Log.debug("An IQ request was addressed to the MUC room '{}' which cannot answer it: {}", room.getName(), packet.toXML());
+                        sendErrorPacket(packet, PacketError.Condition.bad_request, "IQ request cannot be processed by the MUC room itself.");
+                    }
+                }
+            }
+            catch ( NotAcceptableException e )
+            {
+                Log.debug("Unable to process IQ stanza: room requires a password, but none was supplied.", e);
+                sendErrorPacket(packet, PacketError.Condition.not_acceptable, "Room requires a password, but none was supplied.");
+            }
+            catch ( ForbiddenException e )
+            {
+                Log.debug("Unable to process IQ stanza: sender don't have authorization to perform the request.", e);
+                sendErrorPacket(packet, PacketError.Condition.forbidden, "You don't have authorization to perform this request.");
+            }
+            catch ( NotFoundException e )
+            {
+                Log.debug("Unable to process IQ stanza: the intended recipient is not available.", e);
+                sendErrorPacket(packet, PacketError.Condition.recipient_unavailable, "The intended recipient is not available.");
+            }
+            catch ( ConflictException e )
+            {
+                Log.debug("Unable to process IQ stanza: processing this request would leave the room in an invalid state (eg: without owners).", e);
+                sendErrorPacket(packet, PacketError.Condition.conflict, "Processing this request would leave the room in an invalid state (eg: without owners).");
+            }
+            catch ( NotAllowedException e )
+            {
+                Log.debug("Unable to process IQ stanza: an owner or administrator cannot be banned from the room.", e);
+                sendErrorPacket(packet, PacketError.Condition.not_allowed, "An owner or administrator cannot be banned from the room.");
+            }
+            catch ( CannotBeInvitedException e )
+            {
+                Log.debug("Unable to process IQ stanza: user being invited as a result of being added to a members-only room still does not have permission.", e);
+                sendErrorPacket(packet, PacketError.Condition.not_acceptable, "User being invited as a result of being added to a members-only room still does not have permission.");
+            }
+            catch ( Exception e )
+            {
+                Log.error("An unexpected exception occurred while processing IQ stanza: {}", packet.toXML(), e);
+                sendErrorPacket(packet, PacketError.Condition.internal_server_error, "An unexpected exception occurred while processing your request.");
+            }
+        }
+    }
+
+    /**
+     * Process a Presence stanza.
+     *
+     * This method might be invoked for a room that does not yet exist (when the presence is a room-creation request).
+     * This is why this method, unlike the process methods for Message and IQ stanza takes a <em>room name</em> argument
+     * and returns the room that processed to request.
+     *
+     * @param packet          The stanza to process.
+     * @param roomName        The name of the room that the stanza was addressed to.
+     * @param room            The room that the stanza was addressed to, if it exists.
+     * @param preExistingRole The role of this user in the addressed room prior to processing of this stanza, if any.
+     * @return the room that handled the request
+     */
+    @Nullable
+    private MUCRoom process(
+        @Nonnull final Presence packet,
+        @Nonnull final String roomName,
+        @Nullable final MUCRoom room,
+        @Nullable MUCRole preExistingRole )
+    {
+        final Element mucInfo = packet.getChildElement("x", "http://jabber.org/protocol/muc"); // only sent in initial presence
+        final String nickname = packet.getTo().getResource() == null
+            || packet.getTo().getResource().trim().isEmpty() ? null
+            : packet.getTo().getResource().trim();
+
+        if ( preExistingRole == null && Presence.Type.unavailable == packet.getType() ) {
+
+            // This is for clustering scenarios where one node could already have cleaned up the clustered cache,
+            // but the local node still needs to process the 'unavailable' presence of the leaving occupant.
+            final MUCRoom localRoom = localMUCRoomManager.getLocalRooms().get(roomName);
+            if (localRoom != null) {
+                preExistingRole = localRoom.getOccupantByFullJID(packet.getFrom());
+            }
+
+            if (preExistingRole == null) {
+                Log.debug("Silently ignoring user '{}' leaving a room that it has no role in '{}' (was the room just destroyed)?", packet.getFrom(), roomName);
+                return null;
+            } else {
+                Log.debug("NOT silently ignoring user {} leaving a room. Sending 'unavailable' presence for room {} because the occupant was still present in the local room cache", packet.getFrom(), roomName);
+            }
+        }
+        if ( preExistingRole == null || (mucInfo != null && preExistingRole.getNickname().equalsIgnoreCase(nickname) ) )
+        {
+            // If we're not already in a room (role == null), we either are joining it or it's not properly addressed and we drop it silently.
+            // Alternative is that mucInfo is not null, in which case the client thinks it isn't in the room, so we should join anyway.
+            return processRoomJoinRequest(packet, roomName, room, nickname);
+        }
+        else
+        {
+            // Check and reject conflicting packets with conflicting roles
+            // In other words, another user already has this nickname
+            if ( !preExistingRole.getUserAddress().equals(packet.getFrom()) )
+            {
+                Log.debug("Rejecting conflicting stanza with conflicting roles: {}", packet.toXML());
+                sendErrorPacket(packet, PacketError.Condition.conflict, "Another user uses this nickname.");
+                return room;
+            }
+
+            if (room == null) {
+                if (Presence.Type.unavailable == packet.getType()) {
+                    Log.debug("Silently ignoring user '{}' leaving a non-existing room '{}' (was the room just destroyed)?", packet.getFrom(), roomName);
+                } else {
+                    Log.warn("Unable to process presence update from user '{}' to a non-existing room: {}", packet.getFrom(), roomName);
+                }
+                return null;
+            }
+            try
+            {
+                if ( nickname != null && !preExistingRole.getNickname().equalsIgnoreCase(nickname) && Presence.Type.unavailable != packet.getType() )
+                {
+                    // Occupant has changed his nickname. Send two presences to each room occupant.
+                    processNickNameChange(packet, room, preExistingRole, nickname);
+                }
+                else
+                {
+                    processPresenceUpdate(packet, room, preExistingRole);
+                }
+            }
+            catch ( Exception e )
+            {
+                Log.error(LocaleUtils.getLocalizedString("admin.error"), e);
+            }
+            return room;
+        }
+    }
+
+    /**
+     * Process a request to join a room.
+     *
+     * This method might be invoked for a room that does not yet exist (when the presence is a room-creation request).
+     *
+     * @param packet   The stanza representing the nickname-change request.
+     * @param roomName The name of the room that the stanza was addressed to.
+     * @param room     The room that the stanza was addressed to, if it exists.
+     * @param nickname The requested nickname.
+     * @return the room that handled the request
+     */
+    private MUCRoom processRoomJoinRequest(
+        @Nonnull final Presence packet,
+        @Nonnull final String roomName,
+        @Nullable MUCRoom room,
+        @Nullable String nickname )
+    {
+        Log.trace("Processing join request from '{}' for room '{}'", packet.getFrom(), roomName);
+
+        if ( nickname == null )
+        {
+            Log.debug("Request from '{}' to join room '{}' rejected: request did not specify a nickname", packet.getFrom(), roomName);
+
+            // A resource is required in order to join a room http://xmpp.org/extensions/xep-0045.html#enter
+            // If the user does not specify a room nickname (note the bare JID on the 'from' address in the following example), the service MUST return a <jid-malformed/> error
+            if ( packet.getType() != Presence.Type.error )
+            {
+                sendErrorPacket(packet, PacketError.Condition.jid_malformed, "A nickname (resource-part) is required in order to join a room.");
+            }
+            return null;
+        }
+
+        if ( !packet.isAvailable() )
+        {
+            Log.debug("Request from '{}' to join room '{}' rejected: request unexpectedly provided a presence stanza of type '{}'. Expected none.", packet.getFrom(), roomName, packet.getType());
+            if ( packet.getType() != Presence.Type.error )
+            {
+                sendErrorPacket(packet, PacketError.Condition.unexpected_request, "Unexpected stanza type: " + packet.getType());
+            }
+            return null;
+        }
+
+        if (room == null) {
+            try {
+                // Create the room
+                room = getChatRoom(roomName, packet.getFrom());
+            } catch (NotAllowedException e) {
+                Log.debug("Request from '{}' to join room '{}' rejected: user does not have permission to create a new room.", packet.getFrom(), roomName, e);
+                sendErrorPacket(packet, PacketError.Condition.not_allowed, "You do not have permission to create a new room.");
+                return null;
+            }
+        }
+
+        try
+        {
+            // User must support MUC in order to create a room
+            HistoryRequest historyRequest = null;
+            String password = null;
+
+            // Check for password & requested history if client supports MUC
+            final Element mucInfo = packet.getChildElement("x", "http://jabber.org/protocol/muc");
+            if ( mucInfo != null )
+            {
+                password = mucInfo.elementTextTrim("password");
+                if ( mucInfo.element("history") != null )
+                {
+                    historyRequest = new HistoryRequest(mucInfo);
+                }
+            }
+
+            // The user joins the room
+            final MUCRole role = room.joinRoom(nickname,
+                password,
+                historyRequest,
+                packet.getFrom(),
+                packet.createCopy());
+
+            // If the client that created the room is non-MUC compliant then
+            // unlock the room thus creating an "instant" room
+            if ( mucInfo == null && room.isLocked() && !room.isManuallyLocked() )
+            {
+                room.unlock(role);
+            }
+        }
+        catch ( UnauthorizedException e )
+        {
+            Log.debug("Request from '{}' to join room '{}' rejected: user not authorized to create or join the room.", packet.getFrom(), roomName, e);
+            sendErrorPacket(packet, PacketError.Condition.not_authorized, "You're not authorized to create or join the room.");
+        }
+        catch ( ServiceUnavailableException e )
+        {
+            Log.debug("Request from '{}' to join room '{}' rejected: the maximum number of users of the room has been reached.", packet.getFrom(), roomName, e);
+            sendErrorPacket(packet, PacketError.Condition.service_unavailable, "The maximum number of users of the room has been reached.");
+        }
+        catch ( UserAlreadyExistsException | ConflictException e )
+        {
+            Log.debug("Request from '{}' to join room '{}' rejected: the requested nickname '{}' is being used by someone else in the room.", packet.getFrom(), roomName, nickname, e);
+            sendErrorPacket(packet, PacketError.Condition.conflict, "The nickname that is being used is used by someone else.");
+        }
+        catch ( RoomLockedException e )
+        {
+            // If a user attempts to enter a room while it is "locked" (i.e., before the room creator provides an initial configuration and therefore before the room officially exists), the service MUST refuse entry and return an <item-not-found/> error to the user
+            Log.debug("Request from '{}' to join room '{}' rejected: room is locked.", packet.getFrom(), roomName, e);
+            sendErrorPacket(packet, PacketError.Condition.item_not_found, "This room is locked (it might not have been configured yet).");
+        }
+        catch ( ForbiddenException e )
+        {
+            Log.debug("Request from '{}' to join room '{}' rejected: user not authorized join the room.", packet.getFrom(), roomName, e);
+            sendErrorPacket(packet, PacketError.Condition.forbidden, "You're not allowed to join this room.");
+        }
+        catch ( RegistrationRequiredException e )
+        {
+            Log.debug("Request from '{}' to join room '{}' rejected: room is member-only, user is not a member.", packet.getFrom(), roomName, e);
+            sendErrorPacket(packet, PacketError.Condition.registration_required, "This is a member-only room. Membership is required.");
+        }
+        catch ( NotAcceptableException e )
+        {
+            Log.debug("Request from '{}' to join room '{}' rejected: user attempts to use nickname '{}' which is different from the reserved nickname.", packet.getFrom(), roomName, nickname, e);
+            sendErrorPacket(packet, PacketError.Condition.not_acceptable, "You're trying to join with a nickname different than the reserved nickname.");
+        }
+        return room;
+    }
+
+    /**
+     * Process a presence status update for a user.
+     *
+     * @param packet          The stanza to process
+     * @param room            The room that the stanza was addressed to.
+     * @param preExistingRole The role of this user in the addressed room prior to processing of this stanza.
+     */
+    private void processPresenceUpdate(
+        @Nonnull final Presence packet,
+        @Nonnull final MUCRoom room,
+        @Nonnull final MUCRole preExistingRole )
+    {
+        if ( Presence.Type.unavailable == packet.getType() )
+        {
+            Log.trace("Occupant '{}' of room '{}' is leaving.", preExistingRole.getUserAddress(), room.getName());
+            // TODO Consider that different nodes can be creating and processing this presence at the same time (when remote node went down)
+            preExistingRole.setPresence(packet);
+            room.leaveRoom(preExistingRole);
+        }
+        else
+        {
+            Log.trace("Occupant '{}' of room '{}' changed its availability status.", preExistingRole.getUserAddress(), room.getName());
+            room.presenceUpdated(preExistingRole, packet);
+        }
+    }
+
+    /**
+     * Process a request to change a nickname.
+     *
+     * @param packet          The stanza representing the nickname-change request.
+     * @param room            The room that the stanza was addressed to.
+     * @param preExistingRole The role of this user in the addressed room prior to processing of this stanza.
+     * @param nickname        The requested nickname.
+     */
+    private void processNickNameChange(
+        @Nonnull final Presence packet,
+        @Nonnull final MUCRoom room,
+        @Nonnull final MUCRole preExistingRole,
+        @Nonnull String nickname )
+        throws UserNotFoundException
+    {
+        Log.trace("Occupant '{}' of room '{}' tries to change its nickname to '{}'.", preExistingRole.getUserAddress(), room.getName(), nickname);
+
+        if ( room.getOccupantsByBareJID(packet.getFrom().asBareJID()).isEmpty() )
+        {
+            Log.trace("Nickname change request denied: requestor '{}' is not an occupant of the room.", packet.getFrom().asBareJID());
+            sendErrorPacket(packet, PacketError.Condition.not_acceptable, "You are not an occupant of this chatroom.");
+            return;
+        }
+
+        if ( !room.canChangeNickname() )
+        {
+            Log.trace("Nickname change request denied: Room configuration does not allow nickname changes.");
+            sendErrorPacket(packet, PacketError.Condition.not_acceptable, "Chatroom does not allow nickname changes.");
+            return;
+        }
+
+        List<MUCRole> existingOccupants;
+        try {
+            existingOccupants = room.getOccupantsByNickname(nickname);
+        } catch (UserNotFoundException e) {
+            existingOccupants = Collections.emptyList();
+        }
+
+        if ( !existingOccupants.isEmpty() && !existingOccupants.stream().allMatch(r->r.getUserAddress().asBareJID().equals(preExistingRole.getUserAddress().asBareJID())) )
+        {
+            Log.trace("Nickname change request denied: the requested nickname '{}' is used by another occupant of the room.", nickname);
+            sendErrorPacket(packet, PacketError.Condition.conflict, "This nickname is taken.");
+            return;
+        }
+
+        final JID memberBareJID = room.getMemberForReservedNickname(nickname);
+        if (memberBareJID != null && !memberBareJID.equals(preExistingRole.getUserAddress().asBareJID()))
+        {
+            Log.trace("Nickname change request denied: the requested nickname '{}' is reserved by a member of the room.", nickname);
+            sendErrorPacket(packet, PacketError.Condition.conflict, "This nickname is taken.");
+            return;
+        }
+
+        // Send "unavailable" presence for the old nickname
+        final Presence presence = preExistingRole.getPresence().createCopy();
+        // Switch the presence to OFFLINE
+        presence.setType(Presence.Type.unavailable);
+        presence.setStatus(null);
+        // Add the new nickname and status 303 as properties
+        final Element frag = presence.getChildElement("x", "http://jabber.org/protocol/muc#user");
+        frag.element("item").addAttribute("nick", nickname);
+        frag.addElement("status").addAttribute("code", "303");
+        room.send(presence, preExistingRole);
+
+        // Send availability presence for the new nickname
+        final String oldNick = preExistingRole.getNickname();
+        room.nicknameChanged(preExistingRole, packet, oldNick, nickname);
+    }
+
+    /**
+     * Determines if a stanza is a client-generated response to an IQ Ping request sent by this server.
+     *
+     * A 'true' result of this method indicates that the client sending the IQ response is currently reachable.
+     *
+     * @param stanza The stanza to check
+     * @return true if the stanza is a response to an IQ Ping request sent by the server, otherwise false.
+     */
+    public boolean isPendingPingResponse(@Nonnull final Packet stanza) {
+        if (!(stanza instanceof IQ)) {
+            return false;
+        }
+        final IQ iq = (IQ) stanza;
+        if (iq.isRequest()) {
+            return false;
+        }
+
+        // Check if this is an error to a ghost-detection ping that we've sent out. Note that clients that are
+        // connected but do not support XEP-0199 should send back a 'service-unavailable' error per the XEP, but
+        // some clients are known to send 'feature-not-available'. Treat these as indications that the client is
+        // still connected.
+        final Collection<PacketError.Condition> pingErrorsIndicatingClientConnectivity = Arrays.asList(
+            PacketError.Condition.service_unavailable,
+            PacketError.Condition.feature_not_implemented
+        );
+
+        final JID jid = PINGS_SENT.get(iq.getID());
+        final boolean result = jid != null && iq.getFrom().equals(jid)
+            && (iq.getError() == null || pingErrorsIndicatingClientConnectivity.contains(iq.getError().getCondition()));
+
+        if (result) {
+            // If this is _not_ a valid response, 'isDeliveryRelatedErrorResponse' might want to process this. Otherwise, remove.
+            PINGS_SENT.remove(iq.getID());
+        }
+        return result;
+    }
+
+    /**
+     * Determines if a stanza is sent by (on behalf of) an entity that MUC room believes to be an occupant
+     * when they've left: a 'ghost' occupant
+     *
+     * For message and presence stanzas, the delivery errors as defined in section 18.1.2 of XEP-0045 are used.
+     *
+     * For IQ stanzas, these errors may be due to lack of client support rather than a vanished occupant. Therefore,
+     * IQ stanzas will only return 'true' when they are an error response to an IQ Ping request sent by this server.
+     *
+     * @param stanza The stanza to check
+     * @return true if the stanza is a delivery related error response (from a 'ghost user'), otherwise false.
+     * @see <a href="https://xmpp.org/extensions/xep-0045.html#impl-service-ghosts">XEP-0045, section 'ghost users'</a>
+     */
+    public boolean isDeliveryRelatedErrorResponse(@Nonnull final Packet stanza)
+    {
+        if (stanza instanceof IQ) {
+            final IQ iq = ((IQ)stanza);
+            if (iq.getType() != IQ.Type.error) {
+                return false;
+            }
+
+            // Check if this is an error to a ghost-detection ping that we've sent out. Note that clients that are
+            // connected but do not support XEP-0199 should send back a 'service-unavailable' error per the XEP, but
+            // some clients are known to send 'feature-not-available'. Treat these as indications that the client is
+            // still connected.
+            final Collection<PacketError.Condition> pingErrorsIndicatingClientConnectivity = Arrays.asList(
+                PacketError.Condition.service_unavailable,
+                PacketError.Condition.feature_not_implemented
+            );
+
+            if (stanza.getError() != null && pingErrorsIndicatingClientConnectivity.contains(stanza.getError().getCondition())) {
+                return false;
+            }
+
+            final JID jid = PINGS_SENT.get(iq.getID());
+            return jid != null && iq.getFrom().equals(jid) && stanza.getError() != null;
+        }
+
+        // The remainder of this implementation applies to Message and Presence stanzas.
+
+        // Conditions as defined in XEP-0045, section 'ghost users'.
+        final Collection<PacketError.Condition> deliveryRelatedErrorConditions = Arrays.asList(
+            PacketError.Condition.gone,
+            PacketError.Condition.item_not_found,
+            PacketError.Condition.recipient_unavailable,
+            PacketError.Condition.redirect,
+            PacketError.Condition.remote_server_not_found,
+            PacketError.Condition.remote_server_timeout
+        );
+
+        final PacketError error = stanza.getError();
+        return error != null && deliveryRelatedErrorConditions.contains(error.getCondition());
+    }
+
     @Override
     public void initialize(final JID jid, final ComponentManager componentManager) {
         initialize(XMPPServer.getInstance());
-
     }
 
     @Override
     public void shutdown() {
         enableService( false, false );
+        ClusterManager.removeListener(this);
+        MUCEventDispatcher.removeListener(occupantManager);
     }
 
     @Override
@@ -561,43 +1495,60 @@ public class MultiUserChatServiceImpl implements Component, MultiUserChatService
     {
         Log.debug( "Notifying all local users about the imminent destruction of chat service '{}'", chatServiceName );
 
-        if (users.isEmpty()) {
+        final Set<OccupantManager.Occupant> localOccupants = occupantManager.getLocalOccupants();
+
+        if (localOccupants.isEmpty()) {
             return;
         }
 
         // A thread pool is used to broadcast concurrently, as well as to limit the execution time of this service.
-        final ExecutorService service = Executors.newFixedThreadPool( Math.min( users.size(), 10 ) );
+        final ExecutorService service = Executors.newFixedThreadPool( Math.min( localOccupants.size(), 10 ) );
 
         // Queue all tasks in the executor service.
-        for ( final LocalMUCUser user : users.values() )
+        for ( final OccupantManager.Occupant localOccupant : localOccupants )
         {
-            // Submit a concurrent task for each local user (that could be in more than one (local) room).
             service.submit(() -> {
                 try
                 {
-                    for ( final LocalMUCRole role : user.getRoles() )
-                    {
-                        final MUCRoom room = role.getChatRoom();
-
-                        // Send a presence stanza of type "unavailable" to the occupant
-                        final Presence presence = room.createPresence( Presence.Type.unavailable );
-                        presence.setFrom( role.getRoleAddress() );
-
-                        // A fragment containing the x-extension.
-                        final Element fragment = presence.addChildElement( "x", "http://jabber.org/protocol/muc#user" );
-                        final Element item = fragment.addElement( "item" );
-                        item.addAttribute( "affiliation", "none" );
-                        item.addAttribute( "role", "none" );
-                        fragment.addElement( "status" ).addAttribute( "code", "332" );
-
-                        // Make sure that the presence change for each user is only sent to that user (and not broadcast in the room)!
-                        // Not needed to create a defensive copy of the stanza. It's not used anywhere else.
-                        role.send( presence );
+                    // Obtaining the room without acquiring a lock. Usage of the room is read-only (the implementation below
+                    // should not modify the room state in a way that the cluster cares about), and more importantly, speed
+                    // is of importance (waiting for every room's lock to be acquired would slow down the shutdown process).
+                    // Lastly, this service is shutting down (likely because the server is shutting down). The trade-off
+                    // between speed and access of room state while not holding a lock seems worth while here.
+                    final MUCRoom room = getChatRoom(localOccupant.getRoomName());
+                    if (room == null) {
+                        // Mismatch between MUCUser#getRooms() and MUCRoom#localMUCRoomManager ?
+                        Log.warn("User '{}' appears to have had a role in room '{}' of service '{}' that does not seem to exist.", localOccupant.getRealJID(), localOccupant.getRoomName(), chatServiceName);
+                        return;
                     }
+                    final MUCRole role = room.getOccupantByFullJID(localOccupant.getRealJID());
+                    if (role == null) {
+                        // Mismatch between MUCUser#getRooms() and MUCRoom#occupants ?
+                        Log.warn("User '{}' appears to have had a role in room '{}' of service '{}' but that role does not seem to exist.", localOccupant.getRealJID(), localOccupant.getRoomName(), chatServiceName);
+                        return;
+                    }
+
+                    // Send a presence stanza of type "unavailable" to the occupant
+                    final Presence presence = room.createPresence( Presence.Type.unavailable );
+                    presence.setFrom( role.getRoleAddress() );
+
+                    // A fragment containing the x-extension.
+                    final Element fragment = presence.addChildElement( "x", "http://jabber.org/protocol/muc#user" );
+                    final Element item = fragment.addElement( "item" );
+                    item.addAttribute( "affiliation", "none" );
+                    item.addAttribute( "role", "none" );
+                    fragment.addElement( "status" ).addAttribute( "code", "332" );
+
+                    // Make sure that the presence change for each user is only sent to that user (and not broadcast in the room)!
+                    // Not needed to create a defensive copy of the stanza. It's not used anywhere else.
+                    role.send( presence );
+
+                    // Let all other cluster nodes know!
+                    room.removeOccupantRole(role);
                 }
                 catch ( final Exception e )
                 {
-                    Log.debug( "Unable to inform {} about the imminent destruction of chat service '{}'", user.getAddress(), chatServiceName, e );
+                    Log.debug( "Unable to inform {} about the imminent destruction of chat service '{}'", localOccupant.realJID, chatServiceName, e );
                 }
             });
         }
@@ -606,8 +1557,11 @@ public class MultiUserChatServiceImpl implements Component, MultiUserChatService
         service.shutdown();
         try
         {
-            service.awaitTermination( JiveGlobals.getIntProperty( "xmpp.muc.await-termination-millis", 500 ), TimeUnit.MILLISECONDS );
-            Log.debug( "Successfully notified all {} local users about the imminent destruction of chat service '{}'", users.size(), chatServiceName );
+            if (service.awaitTermination( JiveGlobals.getIntProperty( "xmpp.muc.await-termination-millis", 500 ), TimeUnit.MILLISECONDS )) {
+                Log.debug("Successfully notified all local users about the imminent destruction of chat service '{}'", chatServiceName);
+            } else {
+                Log.debug("Unable to notify all local users about the imminent destruction of chat service '{}' (timeout)", chatServiceName);
+            }
         }
         catch ( final InterruptedException e )
         {
@@ -616,56 +1570,154 @@ public class MultiUserChatServiceImpl implements Component, MultiUserChatService
         service.shutdownNow();
     }
 
-    private void checkForTimedOutUsers() {
-        for (final LocalMUCUser user : users.values()) {
-            try (final AutoCloseableReentrantLock.AutoCloseableLock ignored = new AutoCloseableReentrantLock(MultiUserChatServiceImpl.class, user.getAddress().toString()).lock()) {
-                // If user is not present in any room then remove the user from the list of users.
-                if (!user.isJoined()) {
-                    removeUser(user.getAddress()); // Iterating over a collection that is weakly consistent. Removal should not cause Concurrent Modification Exception.
-                    Log.debug("Removed MUC user '{}' that does not seem to be in any room.", user.getAddress());
-                    continue;
+    /**
+     * Iterates over the local occupants of MUC rooms (users connected to the local cluster node), to determine if an
+     * action needs to be taken based on their (lack of) activity. Depending on the configuration of Openfire, inactive
+     * users (users that are connected, but have not typed anything) are kicked from the room, and/or are explicitly
+     * asked for a proof of life (connectivity), removing them if this proof is not given.
+     */
+    private void checkForTimedOutUsers()
+    {
+        for (final OccupantManager.Occupant occupant : occupantManager.getLocalOccupants())
+        {
+            try
+            {
+                if (userIdleKick != null && occupant.getLastActive().isBefore(Instant.now().minus(userIdleKick)))
+                {
+                    // Kick users if 'user_idle' feature is enabled and the user has been idle for too long.
+                    tryRemoveOccupantFromRoom(occupant, JiveGlobals.getProperty("admin.mucRoom.timeoutKickReason", "User was inactive for longer than the allowed maximum duration of " + userIdleKick.toString().substring(2).replaceAll("(\\d[HMS])(?!$)", "$1 ").toLowerCase()) + "." );
                 }
+                else if (userIdlePing != null)
+                {
+                    // Check if the occupant has been inactive for to long.
+                    final Instant lastActive = occupant.getLastActive();
+                    final boolean isInactive = lastActive.isBefore(Instant.now().minus(userIdlePing));
 
-                final Instant lastActive = Instant.ofEpochMilli(user.getLastPacketTime());
+                    // Ensure that we didn't quite recently send a ping already.
+                    final Instant lastPing = occupant.getLastPingRequest();
+                    final boolean isRecentlyPinged = lastPing != null && lastPing.isAfter(Instant.now().minus(userIdlePing));
 
-                // Kick users if 'user_idle' feature is enabled and the user has been idle for too long.
-                final boolean doKick = userIdleKick != null && lastActive.isBefore(Instant.now().minus(userIdleKick));
-
-                // Ping the user if it hasn't been kicked already, the feature is enabled, and the user has been idle for too long.
-                final boolean doPing = !doKick && userIdlePing != null && lastActive.isBefore(Instant.now().minus(userIdlePing));
-
-                if (doKick || doPing) {
-                    final String timeoutKickReason = JiveGlobals.getProperty("admin.mucRoom.timeoutKickReason", "User exceeded idle time limit.");
-                    for (final LocalMUCRole role : user.getRoles()) {
-                        if (doKick) {
-                            // Kick the user from all the rooms that he/she had previously joined.
-                            try {
-                                final Presence kickedPresence = role.getChatRoom().kickOccupant(user.getAddress(), null, null, timeoutKickReason);
-                                // Send the updated presence to the room occupants
-                                role.getChatRoom().send(kickedPresence, role.getChatRoom().getRole());
-                                Log.debug("Kicked occupant '{}' of room '{}' due to exceeding idle time limit.", user.getAddress(), role.getChatRoom().getJID());
-                            } catch (final NotAllowedException e) {
-                                // Do nothing since we cannot kick owners or admins
-                            }
-                        }
-
-                        if (doPing) {
-                            // Send a ping 'from the room' to the user, from all the rooms that he/she had previously joined.
-                            // If this ping results in a connectivity error, that will be picked up by LocalMucRoom's process
-                            // method, that detects 'ghost users', which will kick the user.
-                            final IQ pingRequest = new IQ( IQ.Type.get );
-                            pingRequest.setChildElement( IQPingHandler.ELEMENT_NAME, IQPingHandler.NAMESPACE );
-                            pingRequest.setFrom( role.getChatRoom().getJID() );
-                            pingRequest.setTo( role.getUserAddress() );
-                            router.route(pingRequest);
-                            Log.debug("Pinged occupant '{}' of room '{}' due to exceeding idle time limit.", user.getAddress(), role.getChatRoom().getJID());
-                        }
+                    if (isInactive && !isRecentlyPinged) {
+                        // Ping the user if it hasn't been kicked already, the feature is enabled, and the user has been idle for too long.
+                        pingOccupant(occupant);
                     }
                 }
             }
             catch (final Throwable e) {
                 Log.error(LocaleUtils.getLocalizedString("admin.error"), e);
             }
+        }
+    }
+
+    /**
+     * Removes an occupant from a room.
+     *
+     * When the system is 'busy', the occupant will not be removed to prevent threads blocking. In such cases, a message
+     * is added to the log files, but the occupant remains in the room.
+     *
+     * @param occupant The occupant to be removed
+     * @param reason A human-readable reason for the removal (to be shared with the occupant as well as other occupants of the room).
+     */
+    private void tryRemoveOccupantFromRoom(@Nonnull final OccupantManager.Occupant occupant, @Nonnull final String reason)
+    {
+        final Lock lock = getChatRoomLock(occupant.getRoomName());
+        if (!lock.tryLock()) { // Don't block on locked rooms, as we're processing many of them. We'll get them in the next round.
+            Log.info("Skip removing as a cluster-wide mutex for the room could not immediately be obtained: {}, should have been removed, because: {}", occupant, reason);
+            return;
+        }
+        try {
+            final MUCRoom room = getChatRoom(occupant.getRoomName());
+            if (room == null) {
+                // Room was recently removed? Mismatch between MUCUser#getRooms() and MUCRoom#localMUCRoomManager?
+                Log.info("Skip removing {} as the room no longer exists.", occupant);
+                return;
+            }
+
+            if (!room.hasOccupant(occupant.getRealJID())) {
+                // Occupant no longer in room? Mismatch between MUCUser#getRooms() and MUCRoom#localMUCRoomManager?
+                Log.debug("Skip removing {} as this occupant no longer is in the room.", occupant);
+                return;
+            }
+
+            // Kick the user from the room that he/she had previously joined.
+            Log.debug("Removing/kicking {}: {}", occupant, reason);
+            room.kickOccupant(occupant.getRealJID(), null, null, reason);
+
+            // Ensure that other cluster nodes see any changes that might have been applied.
+            syncChatRoom(room);
+        } catch (final NotAllowedException e) {
+            // Do nothing since we cannot kick owners or admins
+            Log.debug("Skip removing {}, because it's not allowed (this user likely is an owner of admin of the room).", occupant, e);
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    /**
+     * Sends an IQ Ping request to an occupant, and schedules a check that determines if a response to that request
+     * was received (removing the occupant if it is not).
+     *
+     * @param occupant The occupant to ping.
+     */
+    private void pingOccupant(@Nonnull final OccupantManager.Occupant occupant)
+    {
+        Log.debug("Pinging {} as the occupant is exceeding the idle time limit.", occupant);
+        final IQ pingRequest = new IQ( IQ.Type.get );
+        pingRequest.setChildElement( IQPingHandler.ELEMENT_NAME, IQPingHandler.NAMESPACE );
+        pingRequest.setFrom( occupant.getRoomName() + "@" + getServiceDomain() );
+        pingRequest.setTo( occupant.getRealJID() );
+        pingRequest.setID( UUID.randomUUID().toString() ); // Generate unique ID, to prevent duplicate cache entries.
+        XMPPServer.getInstance().getPacketRouter().route(pingRequest);
+        PINGS_SENT.put(pingRequest.getID(), pingRequest.getTo());
+
+        // Schedule a check to see if the ping was answered, kicking the occupant if it wasn't.
+        // The check should be done _before_ the next ping would be sent (to prevent a backlog of ping requests forming)
+        Duration timeoutMs = userIdlePing.dividedBy(4);
+        final CheckPingResponseTask task = new CheckPingResponseTask(occupant, pingRequest.getID());
+        occupant.setPendingPingTask(task);
+        TaskEngine.getInstance().schedule(task, timeoutMs);
+    }
+
+    /**
+     * A task that verifies if a response to a certain IQ Ping stanza (identified by stanza ID) was received, kicking
+     * an occupant of a MUC room if it is not, and if there hasn't been any other activity from the occupant since.
+     */
+    private class CheckPingResponseTask extends TimerTask {
+        final OccupantManager.Occupant occupant;
+        final String stanzaID;
+        final Instant pingRequestSent = Instant.now();
+
+        public CheckPingResponseTask(@Nonnull final OccupantManager.Occupant occupant, @Nonnull final String stanzaID) {
+            this.occupant = occupant;
+            this.stanzaID = stanzaID;
+        }
+
+        @Override
+        public void run()
+        {
+            occupant.setPendingPingTask(null);
+
+            Log.trace("Checking if {} has responded to a ping request that we sent earlier (with stanza ID '{}').", occupant, stanzaID);
+            if (!occupant.getRealJID().equals(PINGS_SENT.remove(stanzaID)))  // A null-check should be enough. Check against recipient for extra safety.
+            {
+                Log.trace("The ping request that we sent earlier to {} seems to have been answered. No need to remove this occupant.", occupant);
+                return;
+            }
+
+            final Instant lastActivity = occupantManager.lastActivityOnLocalNode(occupant.getRealJID());
+            if (lastActivity == null) {
+                // If the occupant is in the room, it likely reconnected to another cluster node. Have that node worry about ghost detection.
+                Log.debug("{} that has been sent a ping request earlier is no longer connected to the local cluster node. No need to remove this occupant.", occupant);
+                return;
+            }
+
+            if (lastActivity.isAfter(pingRequestSent)) {
+                Log.debug("{} has not responded to a ping request that we sent earlier, but has had other activity. No need to remove this occupant.", occupant);
+                return;
+            }
+
+            Log.debug("{} has not responded to a ping request that we sent earlier and didn't have other activity. Occupant should be kicked from the room.", occupant);
+            tryRemoveOccupantFromRoom(occupant, JiveGlobals.getProperty("admin.mucRoom.noPingResponseKickReason", "User seems to be unreachable (didn't respond to a ping request).") );
         }
     }
 
@@ -706,14 +1758,7 @@ public class MultiUserChatServiceImpl implements Component, MultiUserChatService
                 Date cleanUpDate = getCleanupDate();
                 if (cleanUpDate!=null)
                 {
-                    Iterator<LocalMUCRoom> it = localMUCRoomManager.getRooms().iterator();
-                    while (it.hasNext()) {
-                        LocalMUCRoom room = it.next();
-                        Date emptyDate = room.getEmptyDate();
-                        if (emptyDate != null && emptyDate.before(cleanUpDate)) {
-                            removeChatRoom(room.getName());
-                        }
-                    }
+                    totalChatTime += localMUCRoomManager.unloadInactiveRooms(cleanUpDate).toMillis();
                 }
             }
             catch (final Throwable e) {
@@ -751,14 +1796,27 @@ public class MultiUserChatServiceImpl implements Component, MultiUserChatService
     }
 
     @Override
-    public MUCRoom getChatRoom(final String roomName, final JID userjid) throws NotAllowedException {
-        LocalMUCRoom room;
+    @Nonnull public Lock getChatRoomLock(@Nonnull final String roomName) {
+        return localMUCRoomManager.getLock(roomName);
+    }
+
+    @Override
+    public void syncChatRoom(@Nonnull final MUCRoom room) {
+        localMUCRoomManager.sync(room);
+    }
+
+    @Override
+    @Nonnull
+    public MUCRoom getChatRoom(@Nonnull final String roomName, @Nonnull final JID userjid) throws NotAllowedException {
+        MUCRoom room;
         boolean loaded = false;
         boolean created = false;
-        synchronized (roomBaseMutex.intern(roomName)) {
-            room = localMUCRoomManager.getRoom(roomName);
+        final Lock lock = localMUCRoomManager.getLock(roomName);
+        lock.lock();
+        try {
+            room = localMUCRoomManager.get(roomName);
             if (room == null) {
-                room = new LocalMUCRoom(this, roomName, router);
+                room = new MUCRoom(this, roomName);
                 // If the room is persistent load the configuration values from the DB
                 try {
                     // Try to load the room's configuration from the database (if the room is
@@ -793,8 +1851,10 @@ public class MultiUserChatServiceImpl implements Component, MultiUserChatService
                         created = true;
                     }
                 }
-                localMUCRoomManager.addRoom(roomName, room);
+                localMUCRoomManager.add(room);
             }
+        } finally {
+            lock.unlock();
         }
         if (created) {
             // Fire event that a new room has been created
@@ -803,29 +1863,22 @@ public class MultiUserChatServiceImpl implements Component, MultiUserChatService
         if (loaded || created) {
             // Initiate FMUC, when enabled.
             room.getFmucHandler().applyConfigurationChanges();
-
-            // Notify other cluster nodes that a new room is available.
-            // Ensure that the room exists on all nodes, before firing off other room events to avoid race conditions (OF-2207)
-            CacheFactory.doSynchronousClusterTask(new RoomAvailableEvent(room), false);
-            for (final MUCRole role : room.getOccupants()) {
-                if (role instanceof LocalMUCRole) {
-                    CacheFactory.doClusterTask(new OccupantAddedEvent(room, role));
-                }
-            }
         }
         return room;
     }
 
     @Override
-    public MUCRoom getChatRoom(final String roomName) {
+    public MUCRoom getChatRoom(@Nonnull final String roomName) {
         boolean loaded = false;
-        LocalMUCRoom room = localMUCRoomManager.getRoom(roomName);
+        MUCRoom room = localMUCRoomManager.get(roomName);
         if (room == null) {
             // Check if the room exists in the database and was not present in memory
-            synchronized (roomBaseMutex.intern(roomName)) {
-                room = localMUCRoomManager.getRoom(roomName);
+            final Lock lock = localMUCRoomManager.getLock(roomName);
+            lock.lock();
+            try {
+                room = localMUCRoomManager.get(roomName);
                 if (room == null) {
-                    room = new LocalMUCRoom(this, roomName, router);
+                    room = new MUCRoom(this, roomName);
                     // If the room is persistent load the configuration values from the DB
                     try {
                         // Try to load the room's configuration from the database (if the room is
@@ -833,7 +1886,7 @@ public class MultiUserChatServiceImpl implements Component, MultiUserChatService
                         // room may be an old room that was not present in memory)
                         MUCPersistenceManager.loadFromDB(room);
                         loaded = true;
-                        localMUCRoomManager.addRoom(roomName,room);
+                        localMUCRoomManager.add(room);
                     }
                     catch (final IllegalArgumentException e) {
                         // The room does not exist so do nothing
@@ -841,62 +1894,62 @@ public class MultiUserChatServiceImpl implements Component, MultiUserChatService
                         loaded = false;
                     }
                 }
+            } finally {
+                lock.unlock();
             }
         }
         if (loaded) {
             // Initiate FMUC, when enabled.
             room.getFmucHandler().applyConfigurationChanges();
-
-            // Notify other cluster nodes that a new room is available
-            CacheFactory.doClusterTask(new RoomAvailableEvent(room));
         }
         return room;
     }
 
     @Override
-    public void refreshChatRoom(final String roomName) {
-        localMUCRoomManager.removeRoom(roomName);
-        getChatRoom(roomName);
-    }
-
-    public LocalMUCRoom getLocalChatRoom(final String roomName) {
-        return localMUCRoomManager.getRoom(roomName);
-    }
-
-    @Override
-    @Deprecated
-    public List<MUCRoom> getChatRooms() {
-        return new ArrayList<>(localMUCRoomManager.getRooms());
-    }
-
-    @Override
     public List<MUCRoom> getActiveChatRooms() {
-        return new ArrayList<>(localMUCRoomManager.getRooms());
+        return new ArrayList<>(localMUCRoomManager.getAll());
     }
 
+    /**
+     *  Combine names of all rooms in the database (to catch any rooms that aren't currently in memory) with all
+     *  names of rooms currently in memory (to include rooms that are non-persistent / never saved in the database).
+     *  Duplicates will be removed by virtue of using a Set.
+     *
+     * @return Names of all rooms that are known to this service.
+     */
     @Override
     public Set<String> getAllRoomNames() {
-        // Combine names of all rooms in the database (to catch any rooms that aren't currently in memory) with all
-        // names of rooms currently in memory (to include rooms that are non-persistent / never saved in the database).
-        // Duplicates will be removed by virtue of using a Set.
         final Set<String> result = new HashSet<>();
         result.addAll( MUCPersistenceManager.loadRoomNamesFromDB(this) );
-        result.addAll( localMUCRoomManager.getRooms().stream().map(LocalMUCRoom::getName).collect(Collectors.toSet()) );
+        result.addAll( localMUCRoomManager.getAll().stream().map(MUCRoom::getName).collect(Collectors.toSet()) );
 
         return result;
     }
 
+    // This method operates on MUC rooms without acquiring a cluster lock for them. As the usage is read-only, and the
+    // method would have to lock _every_ room, the cost of acquiring all locks seem to outweigh the benefit.
     @Override
     public Collection<MUCRoomSearchInfo> getAllRoomSearchInfo() {
         // Base the result for all rooms that are in memory, then complement with rooms in the database that haven't
         // been added yet (to catch all non-active rooms);
-        final List<MUCRoomSearchInfo> result = getActiveChatRooms().stream().map(MUCRoomSearchInfo::new).collect(Collectors.toList());
+        return getActiveAndInactiveRooms().stream().map(MUCRoomSearchInfo::new).collect(Collectors.toList());
+    }
+
+    /**
+     * Returns all rooms serviced by this service. This includes rooms designated as non-active, which are loaded from
+     * the database if necessary. This method can also be used solely for that 'side' effect of ensuring that all rooms
+     * are loaded.
+     *
+     * @return All rooms serviced by this service.
+     */
+    public List<MUCRoom> getActiveAndInactiveRooms() {
+        final List<MUCRoom> result = getActiveChatRooms();
 
         if (JiveGlobals.getBooleanProperty("xmpp.muc.search.skip-unloaded-rooms", false)) {
             return result;
         }
 
-        final Set<String> loadedNames = result.stream().map(MUCRoomSearchInfo::getName).collect(Collectors.toSet());
+        final Set<String> loadedNames = result.stream().map(MUCRoom::getName).collect(Collectors.toSet());
         final Collection<String> dbNames = MUCPersistenceManager.loadRoomNamesFromDB(this);
         dbNames.removeAll(loadedNames); // what remains needs to be loaded from the database;
 
@@ -904,7 +1957,7 @@ public class MultiUserChatServiceImpl implements Component, MultiUserChatService
             // TODO improve scalability instead of loading every room that wasn't loaded before.
             final MUCRoom chatRoom = this.getChatRoom(name);
             if (chatRoom != null) {
-                result.add(new MUCRoomSearchInfo(chatRoom));
+                result.add(chatRoom);
             }
         }
         return result;
@@ -917,42 +1970,18 @@ public class MultiUserChatServiceImpl implements Component, MultiUserChatService
 
     @Override
     public void removeChatRoom(final String roomName) {
-        removeChatRoom(roomName, true);
-    }
-
-    /**
-     * Notification message indicating that the specified chat room was
-     * removed from some other cluster member.
-     *
-     * @param room the removed room in another cluster node.
-     */
-    @Override
-    public void chatRoomRemoved(final LocalMUCRoom room) {
-        removeChatRoom(room.getName(), false);
-    }
-
-    /**
-     * Notification message indicating that a chat room has been created
-     * in another cluster member.
-     *
-     * @param room the created room in another cluster node.
-     */
-    @Override
-    public void chatRoomAdded(final LocalMUCRoom room) {
-        localMUCRoomManager.addRoom(room.getName(), room) ;
-    }
-
-    private void removeChatRoom(final String roomName, final boolean notify) {
-        final LocalMUCRoom room = localMUCRoomManager.removeRoom(roomName);
-        if (room != null) {
-            Log.info("removing chat room:" + roomName + "|" + room.getClass().getName());
-            totalChatTime += room.getChatLength();
-            if (notify) {
-                // Notify other cluster nodes that a room has been removed
-                CacheFactory.doClusterTask(new RoomRemovedEvent(room));
+        final Lock lock = localMUCRoomManager.getLock(roomName);
+        lock.lock();
+        try {
+            final MUCRoom room = localMUCRoomManager.remove(roomName);
+            if (room != null) {
+                Log.info("removing chat room:" + roomName + "|" + room.getClass().getName());
+                totalChatTime += room.getChatLength();
+            } else {
+                Log.info("No chatroom {} during removal.", roomName);
             }
-        } else {
-            Log.info("No chatroom {} during removal.", roomName);
+        } finally {
+            lock.unlock();
         }
     }
 
@@ -974,58 +2003,46 @@ public class MultiUserChatServiceImpl implements Component, MultiUserChatService
     /**
      * Removes a user from all chat rooms.
      *
-     * @param jabberID The user's normal jid, not the chat nickname jid.
+     * @param userAddress The user's normal jid, not the chat nickname jid.
      */
-    private void removeUser(final JID jabberID) {
-        final LocalMUCUser user = users.remove(jabberID);
-        if (user != null) {
-            for (final LocalMUCRole role : user.getRoles()) {
-                try {
-                    role.getChatRoom().leaveRoom(role);
+    private void removeChatUser(final JID userAddress)
+    {
+        final Set<String> roomNames = occupantManager.roomNamesForAddress(userAddress);
+
+        for (final String roomName : roomNames)
+        {
+            final Lock lock = getChatRoomLock(roomName);
+            lock.lock();
+            try {
+                final MUCRoom room = getChatRoom(roomName);
+                if (room == null) {
+                    // Mismatch between MUCUser#getRooms() and MUCRoom#localMUCRoomManager ?
+                    Log.warn("User '{}' appears to have had a role in room '{}' of service '{}' that does not seem to exist.", userAddress, roomName, chatServiceName);
+                    continue;
                 }
-                catch (final Exception e) {
+                final MUCRole role = room.getOccupantByFullJID(userAddress);
+                if (role == null) {
+                    // Mismatch between MUCUser#getRooms() and MUCRoom#occupants ?
+                    Log.warn("User '{}' appears to have had a role in room '{}' of service '{}' but that role does not seem to exist.", userAddress, roomName, chatServiceName);
+                    continue;
+                }
+                try {
+                    room.leaveRoom(role);
+                    // Ensure that all cluster nodes see the change to the room
+                    syncChatRoom(room);
+                } catch (final Exception e) {
                     Log.error(e.getMessage(), e);
                 }
+            } finally {
+                lock.unlock();
             }
         }
-    }
-
-    /**
-     * Obtain a chat user by XMPPAddress. Only returns users that are connected to this JVM.
-     *
-     * @param userjid The XMPPAddress of the user.
-     * @param roomName name of the room to receive the packet.
-     * @return The chatuser corresponding to that XMPPAddress.
-     */
-    private MUCUser getChatUser(final JID userjid, final String roomName) {
-        if (router == null) {
-            throw new IllegalStateException("Not initialized");
-        }
-        LocalMUCUser user;
-        synchronized (jidBaseMutex.intern(userjid)) {
-            user = users.get(userjid);
-            if (user == null) {
-                if (roomName != null) {
-                    // Check if the JID belong to a user hosted in another cluster node
-                    final LocalMUCRoom localMUCRoom = localMUCRoomManager.getRoom(roomName);
-                    if (localMUCRoom != null) {
-                        final MUCRole occupant = localMUCRoom.getOccupantByFullJID(userjid);
-                        if (occupant != null && !occupant.isLocal()) {
-                            return new RemoteMUCUser(userjid, localMUCRoom);
-                        }
-                    }
-                }
-                user = new LocalMUCUser(this, router, userjid);
-                users.put(userjid, user);
-            }
-        }
-        return user;
     }
 
     @Override
     public Collection<MUCRole> getMUCRoles(final JID user) {
         final List<MUCRole> userRoles = new ArrayList<>();
-        for (final LocalMUCRoom room : localMUCRoomManager.getRooms()) {
+        for (final MUCRoom room : localMUCRoomManager.getAll()) {
             final MUCRole role = room.getOccupantByFullJID(user);
             if (role != null) {
                 userRoles.add(role);
@@ -1048,22 +2065,50 @@ public class MultiUserChatServiceImpl implements Component, MultiUserChatService
 
     @Override
     public void setIdleUserTaskInterval(final @Nonnull Duration duration) {
-        if (Objects.equals(duration, this.userIdleTaskInterval)) {
-            return;
-        }
-
-        // Cancel the existing task because the timeout has changed
-        if (userTimeoutTask != null) {
-            userTimeoutTask.cancel();
-        }
-        this.userIdleTaskInterval = duration;
-
-        // Create a new task and schedule it with the new timeout
-        userTimeoutTask = new UserTimeoutTask();
-        TaskEngine.getInstance().schedule(userTimeoutTask, userIdleTaskInterval.toMillis(), userIdleTaskInterval.toMillis());
-
         // Set the new property value
         MUCPersistenceManager.setProperty(chatServiceName, "tasks.user.timeout", Long.toString(userIdleTaskInterval.toMillis()));
+
+        rescheduleUserTimeoutTask();
+    }
+
+    private void rescheduleUserTimeoutTask()
+    {
+        // Use the 25% of the smallest of 'userIdleKick' or 'userIdlePing', or 5 minutes if both are unset.
+        Duration recalculated = Stream.of(userIdleKick, userIdlePing)
+            .filter(Objects::nonNull)
+            .filter(duration -> duration.compareTo(Duration.ofSeconds(30)) > 0) // Not faster than every so often.
+            .sorted()
+            .findFirst()
+            .orElse(Duration.ofMinutes(5*4))
+            .dividedBy(4);
+
+        // But if the property is set, use that.
+        String value = MUCPersistenceManager.getProperty(chatServiceName, "tasks.user.timeout");
+        if (value != null) {
+            try {
+                recalculated = Duration.ofMillis(Long.parseLong(value));
+            }
+            catch (final NumberFormatException e) {
+                Log.error("Wrong number format of property tasks.user.timeout for service "+chatServiceName, e);
+            }
+        }
+
+        if (Objects.equals(recalculated, this.userIdleTaskInterval)) {
+            return;
+        }
+        Log.info("Rescheduling user idle task, recurring every {}", recalculated);
+        this.userIdleTaskInterval = recalculated;
+
+        synchronized (this) {
+            // Cancel the existing task because the timeout has changed
+            if (userTimeoutTask != null) {
+                TaskEngine.getInstance().cancelScheduledTask(userTimeoutTask);
+            }
+
+            // Create a new task and schedule it with the new timeout
+            userTimeoutTask = new UserTimeoutTask();
+            TaskEngine.getInstance().schedule(userTimeoutTask, userIdleTaskInterval, userIdleTaskInterval);
+        }
     }
 
     @Override
@@ -1083,6 +2128,8 @@ public class MultiUserChatServiceImpl implements Component, MultiUserChatService
 
         // Set the new property value
         MUCPersistenceManager.setProperty(chatServiceName, "tasks.user.idle", userIdleKick == null ? "-1" : Long.toString(userIdleKick.toMillis()));
+
+        rescheduleUserTimeoutTask();
     }
 
     @Override
@@ -1100,8 +2147,14 @@ public class MultiUserChatServiceImpl implements Component, MultiUserChatService
 
         this.userIdlePing = duration;
 
+        if (userIdlePing != null && PINGS_SENT.getMaxLifetime() < userIdlePing.dividedBy(4).toMillis()) {
+            Log.warn("The cache that tracks Ping requests ({}) has a maximum entry lifetime ({}) that is shorter than the time that we wait for responses ({}). This will result in (some) occupants not being removed when they fail to respond to Pings. An Openfire admin should adjust the configuration.", PINGS_SENT.getName(), Duration.ofMillis(PINGS_SENT.getMaxLifetime()), userIdlePing.dividedBy(4));
+        }
+
         // Set the new property value
         MUCPersistenceManager.setProperty(chatServiceName, "tasks.user.ping", userIdlePing == null ? "-1" : Long.toString(userIdlePing.toMillis()));
+
+        rescheduleUserTimeoutTask();
     }
 
     @Override
@@ -1188,7 +2241,7 @@ public class MultiUserChatServiceImpl implements Component, MultiUserChatService
     public void setAllowToDiscoverMembersOnlyRooms(final boolean allowToDiscoverMembersOnlyRooms) {
         this.allowToDiscoverMembersOnlyRooms = allowToDiscoverMembersOnlyRooms;
         MUCPersistenceManager.setProperty(chatServiceName, "discover.membersOnly",
-                Boolean.toString(allowToDiscoverMembersOnlyRooms));
+            Boolean.toString(allowToDiscoverMembersOnlyRooms));
     }
 
     /**
@@ -1213,7 +2266,7 @@ public class MultiUserChatServiceImpl implements Component, MultiUserChatService
     public void setAllowToDiscoverLockedRooms(final boolean allowToDiscoverLockedRooms) {
         this.allowToDiscoverLockedRooms = allowToDiscoverLockedRooms;
         MUCPersistenceManager.setProperty(chatServiceName, "discover.locked",
-                Boolean.toString(allowToDiscoverLockedRooms));
+            Boolean.toString(allowToDiscoverLockedRooms));
     }
 
     @Override
@@ -1294,13 +2347,16 @@ public class MultiUserChatServiceImpl implements Component, MultiUserChatService
         initializeSettings();
 
         routingTable = server.getRoutingTable();
-        router = server.getPacketRouter();
         // Configure the handler of iq:register packets
         registerHandler = new IQMUCRegisterHandler(this);
         // Configure the handlers of search requests
         searchHandler = new IQMUCSearchHandler(this);
         muclumbusSearchHandler = new IQMuclumbusSearchHandler(this);
         mucVCardHandler = new IQMUCvCardHandler(this);
+        MUCEventDispatcher.addListener(occupantManager);
+
+        // Ensure that cluster events are handled in RoutingTableImpl first (due to higher listener sequence here)
+        ClusterManager.addListener(this, 0);
     }
 
     public void initializeSettings() {
@@ -1327,13 +2383,13 @@ public class MultiUserChatServiceImpl implements Component, MultiUserChatService
             }
         }
         allowToDiscoverLockedRooms =
-                MUCPersistenceManager.getBooleanProperty(chatServiceName, "discover.locked", true);
+            MUCPersistenceManager.getBooleanProperty(chatServiceName, "discover.locked", true);
         allowToDiscoverMembersOnlyRooms =
-                MUCPersistenceManager.getBooleanProperty(chatServiceName, "discover.membersOnly", true);
+            MUCPersistenceManager.getBooleanProperty(chatServiceName, "discover.membersOnly", true);
         roomCreationRestricted =
-                MUCPersistenceManager.getBooleanProperty(chatServiceName, "create.anyone", false);
+            MUCPersistenceManager.getBooleanProperty(chatServiceName, "create.anyone", false);
         allRegisteredUsersAllowedToCreate =
-                MUCPersistenceManager.getBooleanProperty(chatServiceName, "create.all-registered", false );
+            MUCPersistenceManager.getBooleanProperty(chatServiceName, "create.all-registered", false );
         // Load the list of JIDs that are allowed to create a MUC room
         property = MUCPersistenceManager.getProperty(chatServiceName, "create.jid");
         allowedToCreate.clear();
@@ -1351,17 +2407,7 @@ public class MultiUserChatServiceImpl implements Component, MultiUserChatService
                 }
             }
         }
-        String value = MUCPersistenceManager.getProperty(chatServiceName, "tasks.user.timeout");
-        userIdleTaskInterval = Duration.ofMinutes(5);
-        if (value != null) {
-            try {
-                userIdleTaskInterval = Duration.ofMillis(Long.parseLong(value));
-            }
-            catch (final NumberFormatException e) {
-                Log.error("Wrong number format of property tasks.user.timeout for service "+chatServiceName, e);
-            }
-        }
-        value = MUCPersistenceManager.getProperty(chatServiceName, "tasks.user.idle");
+        String value = MUCPersistenceManager.getProperty(chatServiceName, "tasks.user.idle");
         userIdleKick = null;
         if (value != null) {
             try {
@@ -1377,7 +2423,7 @@ public class MultiUserChatServiceImpl implements Component, MultiUserChatService
             }
         }
         value = MUCPersistenceManager.getProperty(chatServiceName, "tasks.user.ping");
-        userIdlePing = Duration.ofMinutes(8);
+        userIdlePing = Duration.ofMinutes(60);
         if (value != null) {
             try {
                 final long millis = Long.parseLong(value);
@@ -1391,6 +2437,10 @@ public class MultiUserChatServiceImpl implements Component, MultiUserChatService
                 Log.error("Wrong number format of property tasks.user.ping for service "+chatServiceName, e);
             }
         }
+        if (userIdlePing != null && PINGS_SENT.getMaxLifetime() < userIdlePing.dividedBy(4).toMillis()) {
+            Log.warn("The cache that tracks Ping requests ({}) has a maximum entry lifetime ({}) that is shorter than the time that we wait for responses ({}). This will result in (some) occupants not being removed when they fail to respond to Pings. An Openfire admin should adjust the configuration.", PINGS_SENT.getName(), Duration.ofMillis(PINGS_SENT.getMaxLifetime()), userIdlePing.dividedBy(4));
+        }
+
         value = MUCPersistenceManager.getProperty(chatServiceName, "tasks.log.maxbatchsize");
         logMaxConversationBatchSize = 500;
         if (value != null) {
@@ -1425,41 +2475,16 @@ public class MultiUserChatServiceImpl implements Component, MultiUserChatService
         emptyLimit = 30 * 24;
         if (value != null) {
             try {
-            	if (Integer.parseInt(value)>0)
-            		emptyLimit = Integer.parseInt(value) * (long)24;
-            	else
-            		emptyLimit = -1;
+                if (Integer.parseInt(value)>0)
+                    emptyLimit = Integer.parseInt(value) * (long)24;
+                else
+                    emptyLimit = -1;
             }
             catch (final NumberFormatException e) {
                 Log.error("Wrong number format of property unload.empty_days for service "+chatServiceName, e);
             }
         }
-    }
-
-    /**
-     * Property accessor temporarily retained for backward compatibility. The interface prescribes use of
-     * {@link #setLogMaxConversationBatchSize(int)} - so please use that instead.
-     * @param size the number of messages to save to the database on each run of the logging process.
-     * @deprecated Use {@link #setLogMaxConversationBatchSize(int)} instead.
-     */
-    @Override
-    @Deprecated
-    public void setLogConversationBatchSize(int size)
-    {
-        setLogMaxConversationBatchSize(size);
-    }
-
-    /**
-     * Property accessor temporarily retained for backward compatibility. The interface prescribes use of
-     * {@link #getLogMaxConversationBatchSize()} - so please use that instead.
-     * @return the number of messages to save to the database on each run of the logging process.
-     * @deprecated Use {@link #getLogMaxConversationBatchSize()} instead.
-     */
-    @Override
-    @Deprecated
-    public int getLogConversationBatchSize()
-    {
-        return getLogMaxConversationBatchSize();
+        rescheduleUserTimeoutTask();
     }
 
     /**
@@ -1572,12 +2597,8 @@ public class MultiUserChatServiceImpl implements Component, MultiUserChatService
     public void start() {
         XMPPServer.getInstance().addServerListener( this );
 
-        // Run through the users every 5 minutes after a 5 minutes server startup delay (default values)
-        userTimeoutTask = new UserTimeoutTask();
-        TaskEngine.getInstance().schedule(userTimeoutTask, userIdleTaskInterval.toMillis(), userIdleTaskInterval.toMillis());
-
         // Remove unused rooms from memory
-        long cleanupFreq = JiveGlobals.getLongProperty("xmpp.muc.cleanupFrequency.inMinutes", CLEANUP_FREQUENCY) * 60 * 1000;
+        Duration cleanupFreq = Duration.ofMinutes(JiveGlobals.getLongProperty("xmpp.muc.cleanupFrequency.inMinutes", CLEANUP_FREQUENCY));
         TaskEngine.getInstance().schedule(new CleanupTask(), cleanupFreq, cleanupFreq);
 
         // Set us up to answer disco item requests
@@ -1590,8 +2611,8 @@ public class MultiUserChatServiceImpl implements Component, MultiUserChatService
         if (preloadDays > 0) {
             // Load all the persistent rooms to memory
             final Instant cutoff = Instant.now().minus(Duration.ofDays(preloadDays));
-            for (final LocalMUCRoom room : MUCPersistenceManager.loadRoomsFromDB(this, Date.from(cutoff), router)) {
-                localMUCRoomManager.addRoom(room.getName(), room);
+            for (final MUCRoom room : MUCPersistenceManager.loadRoomsFromDB(this, Date.from(cutoff))) {
+                localMUCRoomManager.add(room);
 
                 // Start FMUC, if desired.
                 room.getFmucHandler().applyConfigurationChanges();
@@ -1650,36 +2671,18 @@ public class MultiUserChatServiceImpl implements Component, MultiUserChatService
     @Override
     public int getNumberChatRooms() {
         int persisted = MUCPersistenceManager.countRooms(this);
-        final long nonPersisted = localMUCRoomManager.getRooms().stream().filter(room -> !room.isPersistent()).count();
+        final long nonPersisted = localMUCRoomManager.getAll().stream().filter(room -> !room.isPersistent()).count();
         return persisted + (int) nonPersisted;
     }
 
     /**
-     * Retuns the total number of occupants in all rooms in the server.
+     * Returns the total number of occupants in all rooms.
      *
-     * @param onlyLocal true if only users connected to this JVM will be considered. Otherwise count cluster wise.
-     * @return the number of existing rooms in the server.
+     * @return the total number of occupants.
      */
     @Override
-    public int getNumberConnectedUsers(final boolean onlyLocal) {
-        int total = 0;
-        for (final LocalMUCUser user : users.values()) {
-            if (user.isJoined()) {
-                total = total + 1;
-            }
-        }
-        // Add users from remote cluster nodes
-        if (!onlyLocal) {
-            final Collection<Integer> results =
-                    CacheFactory.doSynchronousClusterTask(new GetNumberConnectedUsers(), false);
-            for (final Integer result : results) {
-                if (result == null) {
-                    continue;
-                }
-                total = total + result;
-            }
-        }
-        return total;
+    public int getNumberConnectedUsers() {
+        return occupantManager.numberOfUniqueUsers();
     }
 
     /**
@@ -1690,7 +2693,7 @@ public class MultiUserChatServiceImpl implements Component, MultiUserChatService
     @Override
     public int getNumberRoomOccupants() {
         int total = 0;
-        for (final MUCRoom room : localMUCRoomManager.getRooms()) {
+        for (final MUCRoom room : localMUCRoomManager.getAll()) {
             total = total + room.getOccupantsCount();
         }
         return total;
@@ -1886,11 +2889,6 @@ public class MultiUserChatServiceImpl implements Component, MultiUserChatService
     }
 
     @Override
-    public DataForm getExtendedInfo(final String name, final String node, final JID senderJID) {
-        return IQDiscoInfoHandler.getFirstDataForm(this.getExtendedInfos(name, node, senderJID));
-    }
-
-    @Override
     public Set<DataForm> getExtendedInfos(String name, String node, JID senderJID) {
         if (name != null && node == null) {
             // Answer the extended info of a given room
@@ -2037,8 +3035,11 @@ public class MultiUserChatServiceImpl implements Component, MultiUserChatService
         final Set<DiscoItem> answer = new HashSet<>();
         if (name == null && node == null)
         {
+            // Before returning the items, ensure that all rooms are properly loaded in memory
+            getActiveAndInactiveRooms();
+
             // Answer all the public rooms as items
-            for (final MUCRoom room : localMUCRoomManager.getRooms())
+            for (final MUCRoom room : localMUCRoomManager.getAll())
             {
                 if (canDiscoverRoom(room, senderJID))
                 {
@@ -2051,7 +3052,7 @@ public class MultiUserChatServiceImpl implements Component, MultiUserChatService
             // Answer the room occupants as items if that info is publicly available
             final MUCRoom room = getChatRoom(name);
             if (room != null && canDiscoverRoom(room, senderJID)) {
-                for (final MUCRole role : room.getOccupants()) {
+                for (final org.jivesoftware.openfire.muc.MUCRole role : room.getOccupants()) {
                     // TODO Should we filter occupants that are invisible (presence is not broadcasted)?
                     answer.add(new DiscoItem(role.getRoleAddress(), null, null, null));
                 }
@@ -2119,4 +3120,354 @@ public class MultiUserChatServiceImpl implements Component, MultiUserChatService
         return isHidden;
     }
 
+
+    @Override
+    public void joinedCluster() {
+        final String fullServiceName = chatServiceName + "." + XMPPServer.getInstance().getServerInfo().getXMPPDomain();
+        Log.debug("Cluster event: service {} joined a cluster - going to restore {} rooms", fullServiceName, localMUCRoomManager.size());
+
+        // The local node joined a cluster.
+
+        // Upon joining a cluster, clustered caches are reset to their clustered equivalent (by the swap from the local
+        // cache implementation to the clustered cache implementation that's done in the implementation of
+        // org.jivesoftware.util.cache.CacheFactory.joinedCluster). This means that they now hold data that's
+        // available on all other cluster nodes. Data that's available on the local node needs to be added again.
+        final Set<OccupantManager.Occupant> occupantsToSync = localMUCRoomManager.restoreCacheContentAfterJoin(occupantManager);
+
+        Log.debug("Occupants to sync: {}", occupantsToSync);
+
+        // Let the other nodes know about our local occupants, as they need this information when it might leave the
+        // cluster (OF-2224) and should tell its local users that new occupants have joined (OF-2233).
+        if (!occupantsToSync.isEmpty()) {
+            CacheFactory.doClusterTask(new SyncLocalOccupantsAndSendJoinPresenceTask(this.chatServiceName, occupantsToSync));
+        }
+        // TODO does this work properly when the rooms are not known on the other nodes?
+    }
+
+    @Override
+    public void joinedCluster(byte[] nodeID) {
+
+        final String fullServiceName = chatServiceName + "." + XMPPServer.getInstance().getServerInfo().getXMPPDomain();
+        Log.debug("Cluster event: service {} got notified that node {} joined a cluster", fullServiceName, new String(nodeID));
+
+        // Another node joined a cluster that we're already part of.
+
+        // Let the new node know about our local occupants, as it needs this information when it might leave the cluster
+        // again (OF-2224). The data is also needed for the joined node to be able to tell its local users that other
+        // occupants have now joined a MUC room that they're in (OF-2233). To generate these stanzas, the receiving node
+        // will probably need additional information. It can obtain this from the clustered cache. Even though we can't
+        // be sure if that node has fully added _its own_ data to that cache (we don't know if restoreCacheContent()
+        // has finished execution), we can be sure that the cache already holds data as provided by _us_.
+        final Set<OccupantManager.Occupant> localOccupants = occupantManager.getLocalOccupants();
+        CacheFactory.doClusterTask( new SyncLocalOccupantsAndSendJoinPresenceTask(this.chatServiceName, localOccupants), nodeID );
+    }
+
+    @Override
+    public void leftCluster() {
+        final String fullServiceName = chatServiceName + "." + XMPPServer.getInstance().getServerInfo().getXMPPDomain();
+        Log.debug("Cluster event: service {} left a cluster - going to restore {} rooms", fullServiceName, localMUCRoomManager.size());
+
+        // The local cluster node left the cluster.
+        if (XMPPServer.getInstance().isShuttingDown()) {
+            // Do not put effort in restoring the correct state if we're shutting down anyway.
+            return;
+        }
+
+        // Get all room occupants that lived on all other nodes, as from the perspective of this node, those nodes are
+        // now no longer part of the cluster.
+        final Set<OccupantManager.Occupant> occupantsOnRemovedNodes = occupantManager.leftCluster();
+
+        // Upon leaving a cluster, clustered caches are reset to their local equivalent (by the swap from the clustered
+        // cache implementation to the default cache implementation that's done in the implementation of
+        // org.jivesoftware.util.cache.CacheFactory.leftCluster). This means that they now hold no data (as a new cache
+        // has been created). Data that's available on the local node needs to be added again.
+        localMUCRoomManager.restoreCacheContentAfterLeave(occupantsOnRemovedNodes);
+
+        // Send presence 'leave' for all of these users to the users that remain in the chatroom (on this node)
+        makeOccupantsOnDisconnectedClusterNodesLeave(occupantsOnRemovedNodes, null);
+    }
+
+    @Override
+    public void leftCluster(byte[] nodeID)
+    {
+        // Another node left the cluster.
+        //
+        // If the cluster node leaves in an orderly fashion, it might have broadcast
+        // the necessary events itself. This cannot be depended on, as the cluster node
+        // might have disconnected unexpectedly (as a result of a crash or network issue).
+        //
+        // All chatroom occupants that were connected to the now disconnected node are no longer 'in the room'. The
+        // remaining occupants should receive 'occupant left' stanzas to reflect this.
+
+        final String fullServiceName = chatServiceName + "." + XMPPServer.getInstance().getServerInfo().getXMPPDomain();
+        Log.debug("Cluster event: service {} got notified that node {} left a cluster", fullServiceName, new String(nodeID));
+
+
+        // We can't be certain if the room cache is fully intact at this point, as described in OF-2297. It is not always
+        // feasible to maintain enough 'local data' to be able to recover from this. Here, we check the cache for
+        // consistency, and remove occupants from rooms (citing 'technical difficulties') where we find such inconsistency.
+        final Set<String> lostRoomNames = localMUCRoomManager.detectAndRemoveLostRooms();
+        for (final String lostRoomName : lostRoomNames) {
+            try {
+                Log.info("Room '{}' was lost from the data structure that's shared in the cluster (the cache). This room is now considered 'gone' for this cluster node. Occupants will be informed.", lostRoomName);
+                final Set<OccupantManager.Occupant> occupants = occupantManager.occupantsForRoomByNode(lostRoomName, XMPPServer.getInstance().getNodeID());
+                final JID roomJID = new JID(lostRoomName, fullServiceName, null);
+                for (final OccupantManager.Occupant occupant : occupants) {
+                    try {
+                        // Send a presence stanza of type "unavailable" to the occupant
+                        final Presence presence = new Presence(Presence.Type.unavailable);
+                        presence.setTo(occupant.getRealJID());
+                        assert lostRoomName.equals(occupant.getRoomName());
+                        presence.setFrom(new JID(lostRoomName, fullServiceName, occupant.getNickname()));
+
+                        // A fragment containing the x-extension.
+                        final Element fragment = presence.addChildElement("x", "http://jabber.org/protocol/muc#user");
+                        final Element item = fragment.addElement("item");
+                        item.addAttribute("affiliation", "none");
+                        item.addAttribute("role", "none");
+                        fragment.addElement("status").addAttribute("code", "110"); // Inform user that presence refers to itself.
+                        fragment.addElement("status").addAttribute("code", "333"); // Inform users that a user was removed because of an error reply.
+
+                        Log.debug("Informing local occupant '{}' on local cluster node that it is being removed from room '{}' because of a (cluster) error.", occupant.getRealJID(), lostRoomName);
+                        XMPPServer.getInstance().getPacketRouter().route(presence);
+                        XMPPServer.getInstance().getPresenceUpdateHandler().removeDirectPresence(occupant.getRealJID(), roomJID);
+                    } catch (Exception e) {
+                        Log.warn("Unable to inform local occupant '{}' on local cluster node that it is being removed from room '{}' because of a (cluster) error.", occupant.getRealJID(), lostRoomName, e);
+                    }
+                }
+                // Clean up the locally maintained bookkeeping.
+                occupantManager.roomDestroyed(roomJID);
+                removeChatRoom(lostRoomName);
+            } catch (Exception e) {
+                Log.warn("Unable to inform occupants on local cluster node that they are being removed from room '{}' because of a (cluster) error.", lostRoomName, e);
+            }
+        }
+
+        // Now that occupants have been properly ousted from the lost rooms, we can make an effort to restore the rooms
+        // from the database. Calling getActiveAndInactiveRooms() will do just that.
+        getActiveAndInactiveRooms();
+
+        // From this point onwards, the remainder of what's in the cache can be considered 'consistent' (as we've dealt with the inconsistencies).
+        // We now need to inform these occupants that occupants of the same room, that exist on other cluster nodes (which are now unreachable)
+        // are no longer in the room.
+
+
+        // Get all room occupants that lived on the node that disconnected
+        final Set<OccupantManager.Occupant> occupantsOnRemovedNode = occupantManager.leftCluster(NodeID.getInstance(nodeID));
+
+        // The content of the room cache can still hold (some) of these occupants. They should be removed from there!
+        // The state of the rooms in the clustered cache should be modified to remove all but our local occupants.
+        for (Iterator<OccupantManager.Occupant> i = occupantsOnRemovedNode.iterator(); i.hasNext(); ) {
+            OccupantManager.Occupant occupant = i.next();
+            final Lock lock = this.getChatRoomLock(occupant.getRoomName());
+            lock.lock();
+            try {
+                final MUCRoom room = this.getChatRoom(occupant.getRoomName());
+                if (room == null) {
+                    continue;
+                }
+                final MUCRole occupantRole = room.getOccupantByFullJID(occupant.getRealJID());
+
+                // When leaving a cluster, the routing table will also detect that some clients are no
+                // longer available. And send presence unavailable stanzas accordingly. Because of that,
+                // the occupant may already have been removed from the room. This may however not happen
+                // at all if federated users are in play. Hence the null check here: if the occupant is
+                // no longer in the room, we don't need to remove it.
+                if (occupantRole != null) {
+                    room.removeOccupantRole(occupantRole);
+                    this.syncChatRoom(room);
+                    Log.debug("Removed occupant role {} from room {}.", occupantRole, room.getJID());
+                } else {
+                    Log.debug("Occupant '{}' already removed, so we don't need to send 'leave' presence in room {}", occupant, room.getJID());
+                    i.remove();
+                }
+            } finally {
+                lock.unlock();
+            }
+        }
+
+        // Send presence 'leave' for all of these users to the users that remain in the chatroom (on this node)
+        makeOccupantsOnDisconnectedClusterNodesLeave(occupantsOnRemovedNode, NodeID.getInstance(nodeID));
+    }
+
+    @Override
+    public void markedAsSeniorClusterMember() {
+        final String fullServiceName = chatServiceName + "." + XMPPServer.getInstance().getServerInfo().getXMPPDomain();
+        Log.debug("Cluster event: service {} got notified that it is now the senior cluster member", fullServiceName);
+        // Do nothing
+        // TODO: Check if all occupants are still reachable
+    }
+
+    @Override
+    public LocalMUCRoomManager getLocalMUCRoomManager() {
+        return localMUCRoomManager;
+    }
+
+    /**
+     * Used by other nodes telling us about their occupants.
+     * @param task
+     */
+    public void process(@Nonnull final SyncLocalOccupantsAndSendJoinPresenceTask task) {
+        occupantManager.process(task);
+        makeOccupantsOnConnectedClusterNodeJoin(task.getOccupants(), task.getOriginator());
+    }
+
+    /**
+     * Sends presence 'join' stanzas on behalf of chatroom occupants that are now connected to the cluster (by virtue
+     * of a cluster node joining the cluster) to other room occupants are local to this cluster node.
+     *
+     * Note that this method does not change state (in either the clustered cache, or local equivalents): it only sends stanzas.
+     *
+     * @param occupantsOnConnectedNodes The occupants for which to send stanzas.
+     * @param remoteNodeID The cluster node ID of the server that joined the cluster.
+     */
+    private void makeOccupantsOnConnectedClusterNodeJoin(@Nullable final Set<OccupantManager.Occupant> occupantsOnConnectedNodes, @Nonnull NodeID remoteNodeID)
+    {
+        Log.debug("Going to send 'join' presence stanzas on the local cluster node for {} occupant(s) of cluster node {} that is now part of our cluster.", occupantsOnConnectedNodes == null || occupantsOnConnectedNodes.isEmpty() ? 0 : occupantsOnConnectedNodes.size(), remoteNodeID);
+        if (occupantsOnConnectedNodes == null || occupantsOnConnectedNodes.isEmpty()) {
+            return;
+        }
+
+        if (!MUCRoom.JOIN_PRESENCE_ENABLE.getValue()) {
+            Log.trace("Skipping, as presences are disabled by configuration.");
+            return;
+        }
+
+        // Find all occupants that were not already on any other node in the cluster. This intends to prevent sending 'join'
+        // presences for occupants that are in the same room, using the same nickname, but using a client that is
+        // connected to a cluster node that already was in the cluster.
+        final Set<OccupantManager.Occupant> toAdd = occupantsOnConnectedNodes.stream()
+            .filter(occupant -> !occupantManager.exists(occupant, remoteNodeID))
+            .collect(Collectors.toSet());
+        Log.trace("After accounting for occupants already in the room by virtue of having another connected device using the same nickname, {} presence stanza(s) are to be sent.", toAdd.size());
+
+        // For each, broadcast a 'join' presence in the room(s).
+        for (final OccupantManager.Occupant occupant : toAdd)
+        {
+            Log.trace("Preparing to send 'join' stanza for occupant '{}' (using nickname '{}') of room '{}'", occupant.getRealJID(), occupant.getNickname(), occupant.getRoomName());
+
+            final MUCRoom chatRoom = getChatRoom(occupant.roomName);
+            if (chatRoom == null) {
+                Log.info("User {} seems to be an occupant (using nickname '{}') of a non-existent room named '{}' on newly connected cluster node(s).", occupant.realJID, occupant.nickname, occupant.roomName);
+                continue;
+            }
+
+            // At this stage, the occupant information must already be available through the clustered cache.
+            final MUCRole occupantRole = chatRoom.getOccupantByFullJID(occupant.getRealJID());
+            if (occupantRole == null) {
+                Log.warn("A remote cluster node ({}) tells us that user {} is supposed to be an occupant (using nickname '{}') of a room named '{}' but the data in the cluster cache does not indicate that this is true.", remoteNodeID, occupant.realJID, occupant.nickname, occupant.roomName);
+                continue;
+            }
+
+            if (!chatRoom.canBroadcastPresence(occupantRole.getRole())) {
+                Log.trace("Skipping join stanza, as room is configured to not broadcast presence for role {}", occupantRole.getRole());
+                continue;
+            }
+
+            // To prevent each (remaining) cluster node from broadcasting the same presence to all occupants of all cluster nodes,
+            // this broadcasts only to occupants on the local node.
+            final Set<OccupantManager.Occupant> recipients = occupantManager.occupantsForRoomByNode(occupant.roomName, XMPPServer.getInstance().getNodeID());
+            for (OccupantManager.Occupant recipient : recipients) {
+                Log.trace("Preparing stanza for recipient {} (nickname: {})", recipient.getRealJID(), recipient.getNickname());
+                try {
+                    // Note that we cannot use org.jivesoftware.openfire.muc.MUCRoom.broadcastPresence() as this would attempt to
+                    // broadcast to the user that is 'joining' to all users. We only want to broadcast locally here.
+
+                    // We _need_ to go through the MUCRole for sending this stanza, as that has some additional logic (eg: FMUC).
+                    final MUCRole recipientRole = chatRoom.getOccupantByFullJID(recipient.getRealJID());
+                    if (recipientRole != null) {
+                        recipientRole.send(occupantRole.getPresence());
+                    } else {
+                        Log.warn("Unable to find MUCRole for recipient '{}' in room {} while broadcasting 'join' presence for occupants on joining cluster node {}.", recipient.getRealJID(), chatRoom.getJID(), remoteNodeID);
+                        XMPPServer.getInstance().getPacketRouter().route(occupantRole.getPresence()); // This is a partial fix that will _probably_ work if FMUC is not used. Better than nothing? (although an argument for failing-fast can be made).
+                    }
+                } catch (Exception e) {
+                    Log.warn("A problem occurred while notifying local occupant that user '{}' joined room '{}' as a result of a cluster node {} joining the cluster.", occupant.nickname, occupant.roomName, remoteNodeID, e);
+                }
+            }
+        }
+        Log.debug("Finished sending 'join' presence stanzas on the local cluster node.");
+    }
+
+    /**
+     * Sends presence 'leave' stanzas on behalf of chatroom occupants that are no longer connected to the cluster to
+     * room occupants that are local to this cluster node.
+     *
+     * Note that this method does not change state (in either the clustered cache, or local equivalents): it only sends stanzas.
+     *
+     * @param occupantsOnRemovedNodes The occupants for which to send stanzas
+     */
+    private void makeOccupantsOnDisconnectedClusterNodesLeave(@Nullable final Set<OccupantManager.Occupant> occupantsOnRemovedNodes, NodeID nodeID)
+    {
+        Log.debug("Going to send 'leave' presence stanzas on the local cluster node for {} occupant(s) of one or more cluster nodes that are no longer part of our cluster.", occupantsOnRemovedNodes == null || occupantsOnRemovedNodes.isEmpty() ? 0 : occupantsOnRemovedNodes.size());
+        if (occupantsOnRemovedNodes == null || occupantsOnRemovedNodes.isEmpty()) {
+            return;
+        }
+
+        if (!MUCRoom.JOIN_PRESENCE_ENABLE.getValue()) {
+            Log.trace("Skipping, as presences are disabled by configuration.");
+            return;
+        }
+
+        // Find all occupants that are now no longer on any node in the cluster. This intends to prevent sending 'leave'
+        // presences for occupants that are in the same room, using the same nickname, but using a client that is
+        // connected to a cluster node that is still in the cluster.
+        final Set<OccupantManager.Occupant> toRemove = occupantsOnRemovedNodes.stream()
+            .filter(occupant -> !occupantManager.exists(occupant))
+            .collect(Collectors.toSet());
+        Log.trace("After accounting for occupants still in the room by virtue of having another connected device using the same nickname, {} presence stanza(s) are to be sent.", toRemove.size());
+
+        // For each, broadcast a 'leave' presence in the room(s).
+        for(final OccupantManager.Occupant occupant : toRemove) {
+            Log.trace("Preparing to send 'leave' stanza for occupant '{}' (using nickname '{}') of room '{}'", occupant.getRealJID(), occupant.getNickname(), occupant.getRoomName());
+            final MUCRoom chatRoom = getChatRoom(occupant.getRoomName());
+            if (chatRoom == null) {
+                Log.info("User {} seems to be an occupant (using nickname '{}') of a non-existent room named '{}' on disconnected cluster node(s).", occupant.getRealJID(), occupant.getNickname(), occupant.getRoomName());
+                continue;
+            }
+
+            // To prevent each (remaining) cluster node from broadcasting the same presence to all occupants of all remaining nodes,
+            // this broadcasts only to occupants on the local node.
+            final Set<OccupantManager.Occupant> recipients;
+            if (nodeID == null) {
+                recipients = occupantManager.occupantsForRoomByNode(occupant.getRoomName(), XMPPServer.getInstance().getNodeID());
+                Log.trace("Intended recipients, count: {} (occupants of the same room, on local node): {}", recipients.size(), recipients.stream().map(OccupantManager.Occupant::getRealJID).map(JID::toString).collect(Collectors.joining( ", " )));
+            } else {
+                recipients = occupantManager.occupantsForRoomExceptForNode(occupant.getRoomName(), nodeID);
+                Log.trace("Intended recipients, count: {} (occupants of the same room, on all remaining cluster nodes): {}", recipients.size(), recipients.stream().map(OccupantManager.Occupant::getRealJID).map(JID::toString).collect(Collectors.joining( ", " )));
+            }
+            for (OccupantManager.Occupant recipient : recipients) {
+                try {
+                    Log.trace("Preparing stanza for recipient {} (nickname: {})", recipient.getRealJID(), recipient.getNickname());
+                    // Note that we cannot use chatRoom.sendLeavePresenceToExistingOccupants(leaveRole) as this would attempt to
+                    // broadcast to the user that is leaving. That user is clearly unreachable in this instance (as it lives on
+                    // a now disconnected cluster node.
+                    final Presence presence = new Presence(Presence.Type.unavailable);
+                    presence.setTo(recipient.getRealJID());
+                    presence.setFrom(new JID(chatRoom.getJID().getNode(), chatRoom.getJID().getDomain(), occupant.nickname));
+                    final Element childElement = presence.addChildElement("x", "http://jabber.org/protocol/muc#user");
+                    final Element item = childElement.addElement("item");
+                    item.addAttribute("role", "none");
+                    if (chatRoom.canAnyoneDiscoverJID() || chatRoom.getModerators().stream().anyMatch(m->m.getUserAddress().asBareJID().equals(recipient.getRealJID().asBareJID()))) {
+                        // Send non-anonymous - add JID.
+                        item.addAttribute("jid", occupant.getRealJID().toString());
+                    }
+                    childElement.addElement( "status" ).addAttribute( "code", "333" );
+
+                    // We _need_ to go through the MUCRole for sending this stanza, as that has some additional logic (eg: FMUC).
+                    final MUCRole recipientRole = chatRoom.getOccupantByFullJID(recipient.getRealJID());
+                    Log.debug("Stanza now being sent: {}", presence.toXML());
+                    if (recipientRole != null) {
+                        recipientRole.send(presence);
+                    } else {
+                        Log.warn("Unable to find MUCRole for recipient '{}' in room {} while broadcasting 'leave' presence for occupants on disconnected cluster node(s).", recipient.getRealJID(), chatRoom.getJID());
+                        XMPPServer.getInstance().getPacketRouter().route(presence); // This is a partial fix that will _probably_ work if FMUC is not used. Better than nothing? (although an argument for failing-fast can be made).
+                    }
+                } catch (Exception e) {
+                    Log.warn("A problem occurred while notifying local occupant that user '{}' left room '{}' as a result of a cluster disconnect.", occupant.nickname, occupant.roomName, e);
+                }
+            }
+        }
+        Log.debug("Finished sending 'leave' presence stanzas on the local cluster node.");
+    }
 }

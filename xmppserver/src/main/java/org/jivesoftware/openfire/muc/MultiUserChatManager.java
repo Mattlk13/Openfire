@@ -15,36 +15,18 @@
  */
 package org.jivesoftware.openfire.muc;
 
-import java.nio.charset.StandardCharsets;
-import java.sql.Connection;
-import java.sql.PreparedStatement;
-import java.sql.ResultSet;
-import java.sql.SQLException;
-import java.sql.Types;
-import java.util.ArrayList;
-import java.util.Comparator;
-import java.util.List;
-import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
-
+import com.google.common.collect.Multimap;
 import org.jivesoftware.database.DbConnectionManager;
 import org.jivesoftware.database.SequenceManager;
 import org.jivesoftware.openfire.XMPPServer;
 import org.jivesoftware.openfire.cluster.ClusterEventListener;
 import org.jivesoftware.openfire.cluster.ClusterManager;
-import org.jivesoftware.openfire.cluster.NodeID;
 import org.jivesoftware.openfire.container.BasicModule;
 import org.jivesoftware.openfire.event.UserEventDispatcher;
 import org.jivesoftware.openfire.event.UserEventListener;
-import org.jivesoftware.openfire.muc.cluster.GetNewMemberRoomsRequest;
-import org.jivesoftware.openfire.muc.cluster.OccupantAddedEvent;
-import org.jivesoftware.openfire.muc.cluster.RoomInfo;
-import org.jivesoftware.openfire.muc.cluster.SeniorMemberServicesRequest;
 import org.jivesoftware.openfire.muc.cluster.ServiceAddedEvent;
-import org.jivesoftware.openfire.muc.cluster.ServiceInfo;
 import org.jivesoftware.openfire.muc.cluster.ServiceRemovedEvent;
 import org.jivesoftware.openfire.muc.cluster.ServiceUpdatedEvent;
-import org.jivesoftware.openfire.muc.spi.LocalMUCRoom;
 import org.jivesoftware.openfire.muc.spi.MUCPersistenceManager;
 import org.jivesoftware.openfire.muc.spi.MUCServicePropertyEventDispatcher;
 import org.jivesoftware.openfire.muc.spi.MUCServicePropertyEventListener;
@@ -57,6 +39,7 @@ import org.jivesoftware.util.JiveConstants;
 import org.jivesoftware.util.LocaleUtils;
 import org.jivesoftware.util.NotFoundException;
 import org.jivesoftware.util.cache.CacheFactory;
+import org.jivesoftware.util.cache.ConsistencyChecks;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.xmpp.component.ComponentException;
@@ -65,13 +48,24 @@ import org.xmpp.packet.JID;
 
 import javax.annotation.Nonnull;
 import javax.annotation.Nullable;
+import java.sql.Connection;
+import java.sql.PreparedStatement;
+import java.sql.ResultSet;
+import java.sql.SQLException;
+import java.sql.Types;
+import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.List;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.stream.Collectors;
 
 /**
  * Provides centralized management of all configured Multi User Chat (MUC) services.
  * 
  * @author Daniel Henninger
  */
-public class MultiUserChatManager extends BasicModule implements ClusterEventListener, MUCServicePropertyEventListener,
+public class MultiUserChatManager extends BasicModule implements MUCServicePropertyEventListener,
         UserEventListener {
 
     private static final Logger Log = LoggerFactory.getLogger(MultiUserChatManager.class);
@@ -123,7 +117,6 @@ public class MultiUserChatManager extends BasicModule implements ClusterEventLis
         addNumberIncomingMessages();
         addNumberOutgoingMessages();
 
-        ClusterManager.addListener(this);
         UserEventDispatcher.addListener(this);
         MUCServicePropertyEventDispatcher.addListener(this);
     }
@@ -135,7 +128,6 @@ public class MultiUserChatManager extends BasicModule implements ClusterEventLis
     public void stop() {
         super.stop();
 
-        ClusterManager.removeListener(this);
         UserEventDispatcher.removeListener(this);
         MUCServicePropertyEventDispatcher.removeListener(this);
 
@@ -851,7 +843,7 @@ public class MultiUserChatManager extends BasicModule implements ClusterEventLis
             public double sample() {
                 double users = 0;
                 for (MultiUserChatService service : getMultiUserChatServices()) {
-                    users += service.getNumberConnectedUsers(false);
+                    users += service.getNumberConnectedUsers();
                 }
                 return users;
             }
@@ -946,123 +938,6 @@ public class MultiUserChatManager extends BasicModule implements ClusterEventLis
         StatisticsManager.getInstance().addMultiStatistic(outgoingStatKey, trafficStatGroup, statistic);
     }
 
-    // Cluster management tasks
-    @Override
-    public void joinedCluster() {
-        if (ClusterManager.isSeniorClusterMember()) {
-            Log.info("We are the senior cluster member. No need to query the senior cluster member for MUC service information.");
-            return;
-        }
-
-        // Get transient rooms and persistent rooms with occupants from senior cluster member and merge with local ones.
-        // If room configuration was changed in both places then latest configuration will be kept
-        Log.info("Querying the senior cluster member for MUC service information.");
-        final List<ServiceInfo> result = CacheFactory.doSynchronousClusterTask( new SeniorMemberServicesRequest(), ClusterManager.getSeniorClusterMember().toByteArray());
-        if (result == null)
-        {
-            Log.warn("Unexpectedly received a 'null' result when querying senior cluster member for MUC Service information.");
-            return;
-        }
-        NodeID thisNodeID = XMPPServer.getInstance().getNodeID();
-        for (final ServiceInfo serviceInfo : result) {
-            MultiUserChatService service;
-            service = XMPPServer.getInstance().getMultiUserChatManager().getMultiUserChatService(serviceInfo.getSubdomain());
-            if (service == null) {
-                // This is a service we don't know about yet, create it locally and register it; Highly suspicious,
-                // as the same set of MUC services should be loaded from the database.
-                Log.warn("Senior cluster member is reporting a MUC service that is not recognized: {}", serviceInfo.getSubdomain());
-                service = new MultiUserChatServiceImpl(serviceInfo.getSubdomain(), serviceInfo.getDescription(), serviceInfo.isHidden());
-                XMPPServer.getInstance().getMultiUserChatManager().registerMultiUserChatService(service);
-            }
-
-            // TODO: Consider if iterating over _all_ rooms is necessary: All database-persisted rooms should generally already
-            //       be available on both nodes (are there database-related race conditions to worry about?) Only rooms that are
-            //       in-memory only (transient) are likely to be processed here.
-            final MultiUserChatServiceImpl serviceImpl = (MultiUserChatServiceImpl)service;
-
-            for (final RoomInfo roomInfo : serviceInfo.getRooms()) {
-                final LocalMUCRoom remoteRoom = roomInfo.getRoom(); // TODO the remote room is treated as a LocalMUCRoom instance here. Is that safe?
-
-                LocalMUCRoom localRoom = serviceImpl.getLocalChatRoom(remoteRoom.getName());
-                if (localRoom == null) {
-                    Log.debug("Create local room with remote information. Room: {}", remoteRoom.getJID());
-                    localRoom = remoteRoom;
-                    serviceImpl.chatRoomAdded(localRoom);
-                }
-                else {
-                    Log.debug("Update local room with remote information. Room: {}", remoteRoom.getJID());
-                    localRoom.updateConfiguration(remoteRoom); // If this would actually change state, that'd be suspicious. Each node should have the same data from the database.
-                }
-
-                // Add remote occupants to local room
-                // TODO Handle conflict of nicknames (OF-2165)
-                for (final OccupantAddedEvent event : roomInfo.getOccupants()) {
-                    if (thisNodeID.equals(event.getNodeID())){
-                        // Do not add occupants as RemoteMucRole who are already on this node as LocalMucRole
-                        continue;
-                    }
-                    event.setSendPresence(true);
-                    event.run();
-                }
-            }
-        }
-    }
-    
-    @Override
-    public void joinedCluster(byte[] nodeID) {
-        Log.info("Querying a cluster member that just joined for its MUC rooms.");
-        final List<RoomInfo> roomInfos = CacheFactory.doSynchronousClusterTask(new GetNewMemberRoomsRequest(), nodeID);
-        if ( roomInfos == null ) {
-            Log.warn("Unexpectedly received a 'null' result when querying cluster member {} for MUC Service information.", nodeID);
-            return;
-        }
-
-        // TODO: Optimize: This makes all cluster nodes query the joining node for data that they mostly already should have.
-        for (final RoomInfo roomInfo : roomInfos) {
-            final LocalMUCRoom remoteRoom = roomInfo.getRoom(); // TODO the remote room is treated as a LocalMUCRoom instance here. Is that safe?
-            final MultiUserChatServiceImpl service = (MultiUserChatServiceImpl)remoteRoom.getMUCService();
-            LocalMUCRoom localRoom = service.getLocalChatRoom(remoteRoom.getName());
-            if (localRoom == null) {
-                Log.debug("Create local room with remote information. Room: {}", remoteRoom.getJID());
-                localRoom = remoteRoom;
-                service.chatRoomAdded(localRoom);
-            }
-
-            // Add remote occupants to local room
-            // TODO Handle conflict of nicknames (OF-2165)
-            for (final OccupantAddedEvent event : roomInfo.getOccupants()) {
-                event.setSendPresence(true);
-                event.run();
-            }
-        }
-    }
-
-    @Override
-    public void leftCluster() {
-        // Do nothing. An unavailable presence will be created for occupants hosted in other cluster nodes.
-    }
-
-    @Override
-    public void leftCluster(byte[] nodeID) {
-        // Remove all room occupants linked to the defunct node as their sessions are cleaned out earlier
-        Log.debug("Removing orphaned occupants associated with defunct node: {}", new String(nodeID, StandardCharsets.UTF_8));
-
-        for (final MultiUserChatService service : getMultiUserChatServices()) {
-            for (final MUCRoom mucRoom : service.getChatRooms()) {
-                for (MUCRole mucRole : mucRoom.getOccupants()) {
-                    if (mucRole.getNodeID().equals(nodeID)) {
-                        mucRoom.leaveRoom(mucRole);
-                    }
-                }
-            }
-        }
-    }
-
-    @Override
-    public void markedAsSeniorClusterMember() {
-        // Do nothing
-    }
-
     @Override
     public void propertySet(String service, String property, Map<String, Object> params) {
         // Let everyone know we've had an update.
@@ -1100,4 +975,24 @@ public class MultiUserChatManager extends BasicModule implements ClusterEventLis
         }
     }
 
+    /**
+     * Verifies that caches and supporting structures around rooms and occupants are in a consistent state.
+     *
+     * Note that this operation can be costly in terms of resource usage. Use with caution in large / busy systems.
+     *
+     * The returned multi-map can contain up to four keys: info, fail, pass, data. All entry values are a human readable
+     * description of a checked characteristic. When the state is consistent, no 'fail' entries will be returned.
+     *
+     * @return A consistency state report.
+     */
+    public List<Multimap<String, String>> clusteringStateConsistencyReportForMucRoomsAndOccupant() {
+        return XMPPServer.getInstance().getMultiUserChatManager().getMultiUserChatServices().stream()
+            .map(mucService -> ConsistencyChecks.generateReportForMucRooms(
+                mucService.getLocalMUCRoomManager().getROOM_CACHE(),
+                mucService.getLocalMUCRoomManager().getLocalRooms(),
+                mucService.getOccupantManager().getOccupantsByNode(),
+                mucService.getOccupantManager().getNodesByOccupant(),
+                mucService.getServiceName()
+            )).collect(Collectors.toList());
+    }
 }

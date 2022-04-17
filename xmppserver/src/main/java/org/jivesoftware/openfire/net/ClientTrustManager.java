@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2004-2008 Jive Software. All rights reserved.
+ * Copyright (C) 2004-2008 Jive Software, 2022 Ignite Realtime Foundation. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -44,11 +44,7 @@ import java.security.cert.PKIXCertPathValidatorResult;
 import java.security.cert.X509CRL;
 import java.security.cert.X509CertSelector;
 import java.security.cert.X509Certificate;
-import java.util.ArrayList;
-import java.util.Collection;
-import java.util.Date;
-import java.util.Enumeration;
-import java.util.List;
+import java.util.*;
 
 import javax.net.ssl.X509TrustManager;
 
@@ -134,14 +130,13 @@ public class ClientTrustManager implements X509TrustManager {
             crlLastUpdated = modified;
             Log.debug("ClientTrustManager: Updating CRLs");
             useCRLs = false;
-            try {
+            try (final FileInputStream crlStream = new FileInputStream(crlFile);
+                 final BufferedInputStream crlBuffer = new BufferedInputStream(crlStream))
+            {
                 CertificateFactory cf = CertificateFactory.getInstance("X.509");
 
                 X509CRL crl;
 
-                FileInputStream crlStream = new FileInputStream(crlFile);
-                BufferedInputStream crlBuffer = new BufferedInputStream(crlStream);
-                
                 crls.clear(); //remove existing CRLs
                 while (crlBuffer.available() > 0) {
                     crl = (X509CRL)cf.generateCRL(crlBuffer);
@@ -152,7 +147,7 @@ public class ClientTrustManager implements X509TrustManager {
             }
             catch(FileNotFoundException e) {
                 // Its ok if the file wasnt found- maybe we dont have any CRL's
-                Log.debug("ClientTrustManager: CRL file not found: "+crlFile.toString());
+                Log.debug("ClientTrustManager: CRL file not found: "+crlFile);
             }
             catch(IOException e) {
                 //Thrown bot the input streams
@@ -174,11 +169,6 @@ public class ClientTrustManager implements X509TrustManager {
         Log.debug("ClientTrustManager: checkClientTrusted(x509Certificates,"+string+") called");
 
         loadCRL();
-        ArrayList<X509Certificate> certs = new ArrayList<>();
-        for(int i = 0; i < x509Certificates.length ; i++) {
-            certs.add(x509Certificates[i]);
-        }
-
 
         boolean verify = JiveGlobals.getBooleanProperty("xmpp.client.certificate.verify", true);
         if (verify) {
@@ -199,7 +189,7 @@ public class ClientTrustManager implements X509TrustManager {
                         if (principalIssuer.equals(principalLast)) {
                             try {
                                 PublicKey publickey =
-                                        x509Certificates[i + 1].getPublicKey();
+                                        x509Certificates[i + 1].getPublicKey(); // lgtm [java/index-out-of-bounds]
                                 x509Certificates[i].verify(publickey);
                             }
                             catch (GeneralSecurityException generalsecurityexception) {
@@ -265,11 +255,10 @@ public class ClientTrustManager implements X509TrustManager {
                 // For every certificate in the chain, verify that the certificate
                 // is valid at the current time.
                 Date date = new Date();
-                for (int i = 0; i < nSize; i++) {
+                for (X509Certificate x509Certificate : x509Certificates) {
                     try {
-                        x509Certificates[i].checkValidity(date);
-                    }
-                    catch (GeneralSecurityException generalsecurityexception) {
+                        x509Certificate.checkValidity(date);
+                    } catch (GeneralSecurityException generalsecurityexception) {
                         throw new CertificateException("invalid date of " + peerIdentities);
                     }
                 }

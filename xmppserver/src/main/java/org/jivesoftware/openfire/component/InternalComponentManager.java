@@ -255,8 +255,8 @@ public class InternalComponentManager extends BasicModule implements ClusterEven
      */
     @Override
     public void removeComponent(String subdomain) {
-        RoutableComponents components = null;
-        if (routables == null || (components = routables.get(subdomain)) == null) {
+        RoutableComponents components;
+        if ((components = routables.get(subdomain)) == null) {
             return;
         }
         List<Component> componentsToRemove = new ArrayList<>(components.getComponents());
@@ -469,6 +469,10 @@ public class InternalComponentManager extends BasicModule implements ClusterEven
     /**
      * Returns true if a component is associated to the specified address. Components
      * registered with this JVM or other cluster nodes are going to be considered.
+     *
+     * Note that this method will return true only if the full JID exactly matches a
+     * component address, meaning that it returns 'false' for any argument that contains
+     * either a node-part or a resource-part.
      *
      * @param componentJID the address of the component. This is the complete domain.
      * @return true if a component is associated to the specified address.

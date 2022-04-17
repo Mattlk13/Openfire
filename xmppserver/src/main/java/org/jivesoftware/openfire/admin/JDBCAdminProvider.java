@@ -99,7 +99,7 @@ public class JDBCAdminProvider implements AdminProvider {
         if (!useConnectionProvider) {
             String jdbcDriver = JiveGlobals.getProperty("jdbcProvider.driver");
             try {
-                Class.forName(jdbcDriver).newInstance();
+                Class.forName(jdbcDriver).getDeclaredConstructor().newInstance();
             } catch (Exception e) {
                 Log.error("Unable to load JDBC driver: " + jdbcDriver, e);
                 return;
@@ -123,13 +123,12 @@ public class JDBCAdminProvider implements AdminProvider {
     }
 
     @Override
-    public List<JID> getAdmins() {
+    public synchronized List<JID> getAdmins() {
         Connection con = null;
         PreparedStatement pstmt = null;
         ResultSet rs = null;
 
         List<JID> jids = new ArrayList<>();
-        synchronized (getAdminsSQL) {
         try {
             con = getConnection();
             pstmt = con.prepareStatement(getAdminsSQL);
@@ -150,7 +149,7 @@ public class JDBCAdminProvider implements AdminProvider {
         } finally {
             DbConnectionManager.closeConnection(rs, pstmt, con);
         }
-        }
+
     }
 
     private void changeAdmins(final Connection con, final String sql, final List<JID> admins) throws SQLException {
@@ -167,25 +166,24 @@ public class JDBCAdminProvider implements AdminProvider {
     }
 
     @Override
-    public void setAdmins(List<JID> newAdmins) {
+    public synchronized void setAdmins(List<JID> newAdmins) {
         if (isReadOnly()) {
             // Reject the operation since the provider is read-only
             throw new UnsupportedOperationException();
         }
 
-        synchronized (getAdminsSQL) {
-            final List<JID> currentAdmins = getAdmins();
-            // Get a list of everyone in the new list not in the current list
-            final List<JID> adminsToAdd = new ArrayList<>(newAdmins);
-            adminsToAdd.removeAll(currentAdmins);
-            // Get a list of everyone in the current list not in the new list
-            currentAdmins.removeAll(newAdmins);
-            try (final Connection con = getConnection()) {
-                changeAdmins(con, insertAdminsSQL, adminsToAdd);
-                changeAdmins(con, deleteAdminsSQL, currentAdmins);
-            } catch (SQLException e) {
-                throw new RuntimeException(e);
-            }
+        final List<JID> currentAdmins = getAdmins();
+        // Get a list of everyone in the new list not in the current list
+        final List<JID> adminsToAdd = new ArrayList<>(newAdmins);
+        adminsToAdd.removeAll(currentAdmins);
+        // Get a list of everyone in the current list not in the new list
+        currentAdmins.removeAll(newAdmins);
+        try (final Connection con = getConnection()) {
+            changeAdmins(con, insertAdminsSQL, adminsToAdd);
+            changeAdmins(con, deleteAdminsSQL, currentAdmins);
+        } catch (SQLException e) {
+            throw new RuntimeException(e);
+
         }
     }
 

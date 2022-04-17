@@ -6,17 +6,14 @@
 <%@ page import="org.jivesoftware.openfire.auth.AuthFactory" %>
 <%@ page import="org.jivesoftware.openfire.auth.AuthToken" %>
 <%@ page import="org.jivesoftware.openfire.auth.UnauthorizedException" %>
-<%@ page import="org.jivesoftware.openfire.cluster.ClusterManager" %>
-<%@ page import="org.jivesoftware.openfire.container.AdminConsolePlugin" %>
-<%@ page import="org.jivesoftware.util.Base64" %>
 <%@ page import="org.jivesoftware.util.CookieUtils" %>
 <%@ page import="org.jivesoftware.util.LocaleUtils" %>
-<%@ page import="org.jivesoftware.util.Log" %>
 <%@ page import="org.jivesoftware.util.ParamUtils" %>
 <%@ page import="org.jivesoftware.util.StringUtils" %>
 <%@ page import="java.net.URL" %>
 <%@ page import="java.util.HashMap" %>
 <%@ page import="java.util.Map" %>
+<%@ page import="org.slf4j.LoggerFactory" %>
 
 <%@ taglib uri="http://java.sun.com/jsp/jstl/core" prefix="c" %>
 <%@ taglib uri="http://java.sun.com/jsp/jstl/fmt" prefix="fmt" %>
@@ -98,21 +95,12 @@
 
     if (login) {
         try {
-            if (secret != null && nodeID != null) {
-                if (StringUtils.hash(AdminConsolePlugin.secret).equals(secret) && ClusterManager
-                    .isClusterMember(Base64.decode(nodeID, Base64.URL_SAFE))) {
-                    authToken = new AuthToken(token);
-                } else {
-                    throw new UnauthorizedException("SSO failed. Invalid secret or node ID was provided");
-                }
+            // Check that a token was provided before trying to verify credentials
+            if (token != null) {
+                authToken = AuthFactory.checkOneTimeAccessToken(token);
+                session = admin.invalidateSession();
             } else {
-                // Check that a username was provided before trying to verify credentials
-                if (token != null) {
-                    authToken = AuthFactory.checkOneTimeAccessToken(token);
-                    session = admin.invalidateSession();
-                } else {
-                    errors.put("unauthorized", LocaleUtils.getLocalizedString("login.failed.wrongtoken"));
-                }
+                errors.put("unauthorized", LocaleUtils.getLocalizedString("login.failed.wrongtoken"));
             }
             if (errors.isEmpty()) {
                 LoginLimitManager.getInstance().recordSuccessfulAttempt(token, request.getRemoteAddr());
@@ -121,7 +109,7 @@
                 return;
             }
         } catch (UnauthorizedException ue) {
-            Log.debug(ue);
+            LoggerFactory.getLogger("loginToken.jsp").debug("Login failed.", ue);
             LoginLimitManager.getInstance().recordFailedAttempt(token, request.getRemoteAddr());
             // Provide a special message if the user provided something containing @
             errors.put("unauthorized", LocaleUtils.getLocalizedString("login.failed.wrongtoken"));
@@ -130,7 +118,7 @@
 
 %>
 
-<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<!DOCTYPE html>
 
 <html>
 <head>
@@ -138,7 +126,7 @@
     <meta http-equiv="X-UA-Compatible" content="IE=edge">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title><%= AdminConsole.getAppName() %> <fmt:message key="login.title"/></title>
-    <script language="JavaScript" type="text/javascript">
+    <script>
         <!--
         // break out of frames
         if (self.parent.frames.length != 0) {
@@ -163,7 +151,7 @@
     <input type="hidden" name="url" value="<%= StringUtils.escapeForXML(url) %>">
 
     <% } catch (Exception e) {
-        Log.error(e);
+        LoggerFactory.getLogger("loginToken.jsp").error("An exception occurred.", e);
     }
     } %>
 
@@ -257,7 +245,7 @@
 
 </form>
 
-<script language="JavaScript" type="text/javascript">
+<script>
     <!--
     document.loginForm.token.focus();
     //-->

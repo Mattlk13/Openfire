@@ -116,9 +116,15 @@ for arguments in "$@"
 do
 case $arguments in
     -debug)
+    echo "Starting debug mode"
     JAVACMD="$JAVACMD -agentlib:jdwp=transport=dt_socket,server=y,suspend=n,address=5005"
     ;;
+    -remotedebug)
+    echo "Starting remote debug mode"
+    JAVACMD="$JAVACMD -agentlib:jdwp=transport=dt_socket,server=y,suspend=n,address=*:5005"
+    ;;
     -demoboot)
+    echo "Starting demoboot"
     cp $OPENFIRE_HOME/conf/openfire-demoboot.xml $OPENFIRE_HOME/conf/openfire.xml
     ;;
     -devboot)
@@ -132,7 +138,7 @@ esac
 done
 
 
-JAVACMD="${JAVACMD} -Dlog4j.configurationFile=${OPENFIRE_LIB}/log4j2.xml -Djdk.tls.ephemeralDHKeySize=matched -Djsse.SSLEngine.acceptLargeFragments=true"
+JAVACMD="${JAVACMD} -Dlog4j.configurationFile=${OPENFIRE_LIB}/log4j2.xml -Dlog4j2.formatMsgNoLookups=true -Djdk.tls.ephemeralDHKeySize=matched -Djsse.SSLEngine.acceptLargeFragments=true"
 
 if [ -z "$LOCALCLASSPATH" ] ; then
 	LOCALCLASSPATH=$OPENFIRE_LIB/startup.jar

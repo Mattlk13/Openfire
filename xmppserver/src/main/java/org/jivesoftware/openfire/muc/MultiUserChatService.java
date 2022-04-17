@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2005-2008 Jive Software. All rights reserved.
+ * Copyright (C) 2005-2008 Jive Software, 2021-2022 Ignite Realtime Foundation. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,12 +17,12 @@
 package org.jivesoftware.openfire.muc;
 
 import org.jivesoftware.database.JiveID;
-import org.jivesoftware.openfire.archive.ArchiveManager;
 import org.jivesoftware.openfire.archive.Archiver;
 import org.jivesoftware.openfire.handler.IQHandler;
-import org.jivesoftware.openfire.muc.spi.LocalMUCRoom;
+import org.jivesoftware.openfire.muc.spi.LocalMUCRoomManager;
 import org.jivesoftware.openfire.muc.spi.MUCPersistenceManager;
 import org.jivesoftware.openfire.muc.spi.MUCRoomSearchInfo;
+import org.jivesoftware.openfire.muc.spi.OccupantManager;
 import org.jivesoftware.util.JiveConstants;
 import org.xmpp.component.Component;
 import org.xmpp.packet.JID;
@@ -34,11 +34,11 @@ import java.time.Duration;
 import java.util.Collection;
 import java.util.List;
 import java.util.Set;
-import java.util.stream.Collectors;
+import java.util.concurrent.locks.Lock;
 
 /**
  * Manages groupchat conversations, chatrooms, and users. This class is designed to operate
- * independently from the rest of the Jive server infrastruture. This theoretically allows
+ * independently from the rest of the Jive server infrastructure. This theoretically allows
  * deployment of the groupchat on a separate server from the main IM server.
  * 
  * @author Gaston Dombiak
@@ -256,52 +256,7 @@ public interface MultiUserChatService extends Component {
     @Nullable
     Duration getIdleUserPingThreshold();
 
-    /**
-     * Sets the time to elapse between logging the room conversations. A <code>TimerTask</code> will
-     * be added to a <code>Timer</code> scheduled for repeated fixed-delay execution whose main
-     * responsibility is to log queued rooms conversations. The number of queued conversations to
-     * save on each run can be configured. See {@link #setLogConversationBatchSize(int)}.
-     *
-     * @param timeout the time to elapse between logging the room conversations.
-     * @deprecated No longer used in Openfire 4.4.0 and later (replaced with continuous writes to database: see {@link ArchiveManager}).
-     */
-    @Deprecated
-    default void setLogConversationsTimeout(int timeout) {}
-
-    /**
-     * Returns the time to elapse between logging the room conversations. A <code>TimerTask</code>
-     * will be added to a <code>Timer</code> scheduled for repeated fixed-delay execution whose main
-     * responsibility is to log queued rooms conversations. The number of queued conversations to
-     * save on each run can be configured. See {@link #getLogConversationBatchSize()}.
-     *
-     * @return the time to elapse between logging the room conversations.
-     * @deprecated No longer used in Openfire 4.4.0 and later (replaced with continuous writes to database: see {@link ArchiveManager}).
-     */
-    @Deprecated
-    default int getLogConversationsTimeout() { return 300000; }
-
-    /**
-     * Sets the number of messages to save to the database on each run of the logging process.
-     * Even though the saving of queued conversations takes place in another thread it is not
-     * recommended specifying a big number.
-     *
-     * @param size the number of messages to save to the database on each run of the logging process.
-     * @deprecated No longer used in Openfire 4.4.0 and later (replaced with continuous writes to database: see {@link ArchiveManager}).
-     */
-    @Deprecated
-    default void setLogConversationBatchSize(int size) {};
-
-    /**
-     * Returns the number of messages to save to the database on each run of the logging process.
-     *
-     * @return the number of messages to save to the database on each run of the logging process.
-     * @deprecated No longer used in Openfire 4.4.0 and later (replaced with continuous writes to database: see {@link ArchiveManager}).
-     */
-    @Deprecated
-    default int getLogConversationBatchSize() { return 50; };
-
     Archiver<?> getArchiver();
-
 
     /**
      * Returns the maximum number of messages to save to the database on each run of the archiving process.
@@ -359,75 +314,72 @@ public interface MultiUserChatService extends Component {
     boolean canDiscoverRoom(final MUCRoom room, final JID entity);
 
     /**
+     * Generates a mutex object that controls cluster-wide access to a MUCRoom instance that represents the room in this
+     * service identified by the provided name.
+     *
+     * The lock, once returned, is not acquired/set.
+     *
+     * @param roomName Name of the room for which to return a lock.
+     * @return The lock (which has not been set yet).
+     */
+    @Nonnull Lock getChatRoomLock(@Nonnull final String roomName);
+
+    /**
+     * Makes available the current state of the provided MUCRoom instance to all nodes in the Openfire cluster (if the
+     * local server is part of such a cluster). This method should be used whenever a MUCRoom instance has been changed.
+     *
+     * @param room The room for which to persist state changes across the Openfire cluster.
+     */
+    void syncChatRoom(@Nonnull final MUCRoom room);
+
+    /**
      * Obtains a chatroom by name. A chatroom is created for that name if none exists and the user
      * has permission. The user that asked for the chatroom will be the room's owner if the chatroom
      * was created.
-     * 
+     *
+     * Note that when obtaining a room instance using this method, the caller should take responsibility to make sure
+     * that any changes to the instance will become visible to other cluster nodes (which is done by invoking
+     * {@link #syncChatRoom(MUCRoom)}. Where appropriate, the caller should apply mutex (as returned by
+     * {@link #getChatRoomLock(String)}) to control concurrent access to the returned instance.
+     *
      * @param roomName Name of the room to get.
      * @param userjid The user's normal jid, not the chat nickname jid.
      * @return The chatroom for the given name.
      * @throws NotAllowedException If the caller doesn't have permission to create a new room.
+     * @see #syncChatRoom(MUCRoom)
      */
-    MUCRoom getChatRoom(String roomName, JID userjid) throws NotAllowedException;
+    // TODO see if this can be replaced with an explicit 'create'.
+    @Nonnull MUCRoom getChatRoom(@Nonnull final String roomName, @Nonnull final JID userjid) throws NotAllowedException;
 
     /**
      * Obtains a chatroom by name. If the chatroom does not exists then null will be returned.
-     * 
+     *
+     * Note that when obtaining a room instance using this method, the caller should take responsibility to make sure
+     * that any changes to the instance will become visible to other cluster nodes (which is done by invoking
+     * {@link #syncChatRoom(MUCRoom)}. Where appropriate, the caller should apply a mutex (as returned by
+     * {@link #getChatRoomLock(String)}) to control concurrent access to the returned instance.
+     *
      * @param roomName Name of the room to get.
      * @return The chatroom for the given name or null if the room does not exists.
+     * @see #syncChatRoom(MUCRoom)
      */
-    MUCRoom getChatRoom(String roomName);
-    
-    /**
-    * Forces a re-read of the room. Useful when a change occurs externally.
-    * 
-    * @param roomName Name of the room to refresh.
-    */
-    void refreshChatRoom(String roomName);
-    
-    /**
-     * Returns a list with a snapshot of all the rooms in the server that are loaded in memory.
-     *
-     * Note: up to release 4.6.4 this method was documented to return all the rooms in the server (i.e. persistent or not,
-     * in memory or not). The implementation did not do this, although that behavior had been in place for years.
-     * To avoid future confusion, the method is deprecated, keeping the existing behavior. Replacements have been added
-     * that will return the data as defined in their contract
-     *
-     * @return a list with a snapshot of all the rooms.
-     * @deprecated replaced by getActiveChatRooms() and getAllRoomNames()
-     */
-    @Deprecated // Remove in Openfire 4.7 or later.
-    List<MUCRoom> getChatRooms();
+    @Nullable MUCRoom getChatRoom(@Nonnull final String roomName);
 
     /**
      * Returns a list with a snapshot of all the rooms in the server that are actively loaded in memory.
      *
      * @return a list with a snapshot of rooms.
      */
-    default List<MUCRoom> getActiveChatRooms() {
-        return getChatRooms(); // Openfire prior to v4.6.4 returned inMemory rooms only.
-    }
+    List<MUCRoom> getActiveChatRooms();
 
     /**
      * Returns a list of names of all the rooms in the server (i.e. persistent or not, in memory or not).
      *
      * @return All room names
      */
-    default Set<String> getAllRoomNames() {
-        // This implementation is wrong, as it won't include names for rooms that are not actively in memory. This
-        // corresponds to the default behavior prior to release v4.6.4. As a fallback (to not break API), it that's
-        // deemed 'acceptable'. This default implementation should be removed (leaving just the interface signature
-        // in place) in or after Openfire 4.7.
-        return getChatRooms().stream().map(MUCRoom::getName).collect(Collectors.toSet());
-    }
+    Set<String> getAllRoomNames();
 
-    default Collection<MUCRoomSearchInfo> getAllRoomSearchInfo() {
-        // This implementation is wrong, as it won't include names for rooms that are not actively in memory. This
-        // corresponds to the default behavior prior to release v4.6.4. As a fallback (to not break API), it that's
-        // deemed 'acceptable'. This default implementation should be removed (leaving just the interface signature
-        // in place) in or after Openfire 4.7.
-        return getChatRooms().stream().map(MUCRoomSearchInfo::new).collect(Collectors.toList());
-    }
+    Collection<MUCRoomSearchInfo> getAllRoomSearchInfo();
 
     /**
      * Returns true if the server includes a chatroom with the requested name.
@@ -438,22 +390,6 @@ public interface MultiUserChatService extends Component {
     boolean hasChatRoom(String roomName);
 
     /**
-     * Notification message indicating that the specified chat room was
-     * removed from some other cluster member.
-     *
-     * @param room the removed room in another cluster node.
-     */
-    void chatRoomRemoved( LocalMUCRoom room );
-
-    /**
-     * Notification message indicating that a chat room has been created
-     * in another cluster member.
-     *
-     * @param room the created room in another cluster node.
-     */
-    void chatRoomAdded( LocalMUCRoom room );
-
-    /**
      * Removes the room associated with the given name.
      * 
      * @param roomName The room to remove.
@@ -462,9 +398,7 @@ public interface MultiUserChatService extends Component {
 
     /**
      * Returns the list of {@link org.jivesoftware.openfire.muc.MUCRole} in all rooms for the specified
-     * user's session. When running in a cluster the list will include
-     * {@link org.jivesoftware.openfire.muc.spi.LocalMUCRole} and {@link org.jivesoftware.openfire.muc.spi.RemoteMUCRole}.
-     *
+     * user's session.
      *
      * @param user the full JID that identifies the session of the user.
      * @return the list of MUCRoles in all rooms for the specified user's session.
@@ -487,12 +421,11 @@ public interface MultiUserChatService extends Component {
     int getNumberChatRooms();
 
     /**
-     * Retuns the total number of occupants in all rooms in the server.
+     * Returns the total number of occupants in all rooms.
      *
-     * @param onlyLocal true if only users connected to this JVM will be considered. Otherwise count cluster wise.
-     * @return the number of existing rooms in the server.
+     * @return the count of all occupants.
      */
-    int getNumberConnectedUsers( boolean onlyLocal );
+    int getNumberConnectedUsers();
 
     /**
      * Retuns the total number of users that have joined in all rooms in the server.
@@ -569,6 +502,9 @@ public interface MultiUserChatService extends Component {
      */
     boolean isHidden();
 
+    @Nonnull
+    OccupantManager getOccupantManager();
+
     /**
      * Add a IQHandler to MUC rooms and services. If the IQHandler only supports one or
      * other, it should quietly ignore it.
@@ -617,4 +553,7 @@ public interface MultiUserChatService extends Component {
      * @return Handler for MUC events (delegate)
      */
     MUCEventDelegate getMUCDelegate();
+
+    @Nonnull
+    LocalMUCRoomManager getLocalMUCRoomManager();
 }

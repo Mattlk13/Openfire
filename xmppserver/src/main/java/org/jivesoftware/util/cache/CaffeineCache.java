@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2019 Ignite Realtime Foundation. All rights reserved.
+ * Copyright (C) 2019-2022 Ignite Realtime Foundation. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,6 +15,9 @@
  */
 package org.jivesoftware.util.cache;
 
+import org.jivesoftware.openfire.cluster.ClusteredCacheEntryListener;
+
+import javax.annotation.Nonnull;
 import java.io.Serializable;
 import java.time.Duration;
 import java.util.Collection;
@@ -125,22 +128,6 @@ public class CaffeineCache<K extends Serializable, V extends Serializable> imple
     }
 
     /**
-     * Sets the maximum size of the cache in bytes limited to integer size. If the cache grows larger
-     * than the max size, the least frequently used items will be removed. If
-     * the max cache size is set to -1, there is no size limit.
-     *
-     * <p><strong>Note:</strong> If using the Hazelcast clustering plugin, this will not take
-     * effect until the next time the cache is created</p>
-     *
-     * @param maxSize the maximum size of the cache in bytes.
-     */
-    @Override
-    public void setMaxCacheSize( final int maxSize )
-    {
-        setMaxCacheSize((long) maxSize);
-    }
-
-    /**
      * Sets the maximum size of the cache in bytes. If the cache grows larger
      * than the max size, the least frequently used items will be removed. If
      * the max cache size is set to -1, there is no size limit.
@@ -186,20 +173,6 @@ public class CaffeineCache<K extends Serializable, V extends Serializable> imple
     public void setMaxLifetime( final long maxLifetime )
     {
         cache.policy().expireAfterWrite().ifPresent( expiration -> expiration.setExpiresAfter( Duration.ofMillis( maxLifetime ) ) );;
-    }
-
-    /**
-     * Returns the size of the cache contents in bytes limited to integer size. This value is only a
-     * rough approximation, so cache users should expect that actual VM
-     * memory used by the cache could be significantly higher than the value
-     * reported by this method.
-     *
-     * @return the size of the cache contents in bytes.
-     */
-    @Override
-    public int getCacheSize()
-    {
-        return (int) Math.min( Integer.MAX_VALUE, getLongCacheSize() );
     }
 
     /**
@@ -492,5 +465,15 @@ public class CaffeineCache<K extends Serializable, V extends Serializable> imple
     public Set<K> keySet()
     {
         return Collections.unmodifiableSet( cache.asMap().keySet() );
+    }
+
+    @Override
+    public String addClusteredCacheEntryListener(@Nonnull final ClusteredCacheEntryListener<K, V> listener, final boolean includeValues, final boolean includeEventsFromLocalNode) {
+        throw new UnsupportedOperationException();
+    }
+
+    @Override
+    public void removeClusteredCacheEntryListener(@Nonnull final String listenerId) {
+        throw new UnsupportedOperationException();
     }
 }

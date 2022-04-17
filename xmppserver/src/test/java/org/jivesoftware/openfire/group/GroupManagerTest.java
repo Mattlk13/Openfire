@@ -1,3 +1,18 @@
+/*
+ * Copyright (C) 2022 Ignite Realtime Foundation. All rights reserved.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
 package org.jivesoftware.openfire.group;
 
 import static junit.framework.TestCase.fail;
@@ -8,8 +23,10 @@ import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoMoreInteractions;
 
-import java.io.Serializable;
+import java.lang.reflect.Field;
+import java.util.Arrays;
 import java.util.Collection;
+import java.util.Map;
 
 import org.jivesoftware.Fixtures;
 import org.jivesoftware.util.CacheableOptional;
@@ -17,6 +34,7 @@ import org.jivesoftware.util.JiveGlobals;
 import org.jivesoftware.util.PersistableMap;
 import org.jivesoftware.util.cache.Cache;
 import org.jivesoftware.util.cache.CacheFactory;
+import org.junit.AfterClass;
 import org.junit.Before;
 import org.junit.BeforeClass;
 import org.junit.Test;
@@ -30,7 +48,6 @@ public class GroupManagerTest {
 
     private static final String GROUP_NAME = "test-group-name";
     private static Cache<String, CacheableOptional<Group>> groupCache;
-    private static Cache<String, Serializable> groupMetadataCache;
     @Mock
     GroupProvider groupProvider;
     private GroupManager groupManager;
@@ -43,16 +60,31 @@ public class GroupManagerTest {
     public static void beforeClass() throws Exception {
         Fixtures.reconfigureOpenfireHome();
         groupCache = CacheFactory.createCache("Group");
-        groupMetadataCache = CacheFactory.createCache("Group Metadata Cache");
+        groupCache.clear();
         JiveGlobals.setProperty("provider.group.className", TestGroupProvider.class.getName());
     }
 
     @Before
     public void setUp() {
-        groupCache.clear();
-        groupMetadataCache.clear();
+        // Ensure that Openfire caches are reset before each test to avoid tests to affect each-other.
+        Arrays.stream(CacheFactory.getAllCaches()).forEach(Map::clear);
+
         TestGroupProvider.mockGroupProvider = groupProvider;
         groupManager = GroupManager.getInstance();
+    }
+
+    @AfterClass
+    public static void afterClass() throws Exception {
+
+        // Reset static fields after use (to not confuse other test classes).
+        for (String fieldName : Arrays.asList("INSTANCE", "provider")) {
+            Field field = GroupManager.class.getDeclaredField(fieldName);
+            field.setAccessible(true);
+            field.set(null, null);
+            field.setAccessible(false);
+        }
+
+        groupCache.clear();
     }
 
     @Test
@@ -143,12 +175,12 @@ public class GroupManagerTest {
         private static GroupProvider mockGroupProvider;
 
         @Override
-        public Group createGroup(final String name) throws GroupAlreadyExistsException {
+        public Group createGroup(final String name) throws GroupAlreadyExistsException, GroupNameInvalidException {
             return mockGroupProvider.createGroup(name);
         }
 
         @Override
-        public void deleteGroup(final String name) {
+        public void deleteGroup(final String name) throws GroupNotFoundException {
             mockGroupProvider.deleteGroup(name);
         }
 
@@ -158,7 +190,7 @@ public class GroupManagerTest {
         }
 
         @Override
-        public void setName(final String oldName, final String newName) throws GroupAlreadyExistsException {
+        public void setName(final String oldName, final String newName) throws GroupAlreadyExistsException, GroupNameInvalidException, GroupNotFoundException {
             mockGroupProvider.setName(oldName, newName);
         }
 
@@ -213,12 +245,12 @@ public class GroupManagerTest {
         }
 
         @Override
-        public void addMember(final String groupName, final JID user, final boolean administrator) {
+        public void addMember(final String groupName, final JID user, final boolean administrator) throws GroupNotFoundException {
             mockGroupProvider.addMember(groupName, user, administrator);
         }
 
         @Override
-        public void updateMember(final String groupName, final JID user, final boolean administrator) {
+        public void updateMember(final String groupName, final JID user, final boolean administrator) throws GroupNotFoundException {
             mockGroupProvider.updateMember(groupName, user, administrator);
         }
 

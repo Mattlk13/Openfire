@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2004-2008 Jive Software. All rights reserved.
+ * Copyright (C) 2004-2008 Jive Software, 2022 Ignite Realtime Foundation. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -19,19 +19,22 @@ package org.jivesoftware.openfire.muc;
 import org.dom4j.Attribute;
 import org.dom4j.Element;
 import org.dom4j.Namespace;
+import org.jivesoftware.openfire.XMPPServer;
 import org.jivesoftware.openfire.user.UserNotFoundException;
 import org.jivesoftware.util.SAXReaderUtil;
 import org.jivesoftware.util.XMPPDateTimeFormat;
+import org.jivesoftware.util.cache.ExternalizableUtil;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.xmpp.packet.JID;
 import org.xmpp.packet.Message;
 
 import javax.annotation.Nullable;
-import java.util.Date;
-import java.util.Iterator;
-import java.util.List;
-import java.util.ListIterator;
+import java.io.Externalizable;
+import java.io.IOException;
+import java.io.ObjectInput;
+import java.io.ObjectOutput;
+import java.util.*;
 
 /**
  * Represent the data model for one <code>MUCRoom</code> history. Including chat transcript,
@@ -39,18 +42,27 @@ import java.util.ListIterator;
  * 
  * @author Gaston Dombiak
  */
-public final class MUCRoomHistory {
+public final class MUCRoomHistory implements Externalizable {
     private static final Logger Log = LoggerFactory.getLogger(MUCRoomHistory.class);
 
-    private MUCRoom room;
+    private JID roomAddress;
 
     private HistoryStrategy historyStrategy;
 
     private boolean isNonAnonymousRoom;
 
-    public MUCRoomHistory(MUCRoom mucRoom, HistoryStrategy historyStrategy) {
-        this.room = mucRoom;
-        this.isNonAnonymousRoom = mucRoom.canAnyoneDiscoverJID();
+    private transient MUCRoom room; // Lazily initialized by #getRoom()
+
+    /**
+     * This constructor is provided to comply with the Externalizable interface contract. It should not be used directly.
+     */
+    public MUCRoomHistory()
+    {}
+
+    public MUCRoomHistory(MUCRoom room, HistoryStrategy historyStrategy) {
+        this.roomAddress = room.getJID();
+        this.room = room;
+        this.isNonAnonymousRoom = getRoom().canAnyoneDiscoverJID();
         this.historyStrategy = historyStrategy;
     }
 
@@ -61,7 +73,7 @@ public final class MUCRoomHistory {
         // unless the message is changing the room's subject
         if (!isSubjectChangeRequest &&
             (fromJID == null || fromJID.toString().length() == 0 ||
-             fromJID.equals(room.getRole().getRoleAddress()))) {
+             fromJID.equals(getRoom().getRole().getRoleAddress()))) {
             return;
         }
         // Do not store regular messages if there is no message strategy (keep subject change requests)
@@ -78,18 +90,20 @@ public final class MUCRoomHistory {
         Message packetToAdd = packet.createCopy();
 
         // Check if the room has changed its configuration
-        if (isNonAnonymousRoom != room.canAnyoneDiscoverJID()) {
-            isNonAnonymousRoom = room.canAnyoneDiscoverJID();
+        if (isNonAnonymousRoom != getRoom().canAnyoneDiscoverJID()) {
+            isNonAnonymousRoom = getRoom().canAnyoneDiscoverJID();
             // Update the "from" attribute of the delay information in the history
             // TODO Make this update in a separate thread
             for (Iterator<Message> it = getMessageHistory(); it.hasNext();) {
                 Message message = it.next();
                 Element delayElement = message.getChildElement("delay", "urn:xmpp:delay");
-                if (room.canAnyoneDiscoverJID()) {
-                    // Set the Full JID as the "from" attribute
+                if (getRoom().canAnyoneDiscoverJID()) {
+                    // Set the Full JID as the "from" attribute // TODO: This is pretty dodgy, as it depends on the user still being in the room. JIDs _should_ have been stored with the message.
                     try {
-                        MUCRole role = room.getOccupant(message.getFrom().getResource());
-                        delayElement.addAttribute("from", role.getUserAddress().toString());
+                        List<MUCRole> role = getRoom().getOccupantsByNickname(message.getFrom().getResource());
+                        if (!role.isEmpty()) {
+                            delayElement.addAttribute("from", role.get(0).getUserAddress().toString());
+                        }
                     }
                     catch (UserNotFoundException e) {
                         // Ignore.
@@ -107,11 +121,13 @@ public final class MUCRoomHistory {
         Element delayInformation = packetToAdd.addChildElement("delay", "urn:xmpp:delay");
         Date current = new Date();
         delayInformation.addAttribute("stamp", XMPPDateTimeFormat.format(current));
-        if (room.canAnyoneDiscoverJID()) {
-            // Set the Full JID as the "from" attribute
+        if (getRoom().canAnyoneDiscoverJID()) {
+            // Set the Full JID as the "from" attribute // TODO: This is pretty dodgy, as it depends on the user still being in the room. JIDs _should_ have been stored with the message.
             try {
-                MUCRole role = room.getOccupant(packet.getFrom().getResource());
-                delayInformation.addAttribute("from", role.getUserAddress().toString());
+                List<MUCRole> role = getRoom().getOccupantsByNickname(packet.getFrom().getResource());
+                if (!role.isEmpty()) {
+                    delayInformation.addAttribute("from", role.get(0).getUserAddress().toString());
+                }
             }
             catch (UserNotFoundException e) {
                 // Ignore.
@@ -190,27 +206,46 @@ public final class MUCRoomHistory {
         message.setBody(body);
         // Set the sender of the message
         if (nickname != null && nickname.trim().length() > 0) {
-            JID roomJID = room.getRole().getRoleAddress();
+            JID roomJID = getRoom().getRole().getRoleAddress();
             // Recreate the sender address based on the nickname and room's JID
             message.setFrom(new JID(roomJID.getNode(), roomJID.getDomain(), nickname, true));
         }
         else {
             // Set the room as the sender of the message
-            message.setFrom(room.getRole().getRoleAddress());
+            message.setFrom(getRoom().getRole().getRoleAddress());
         }
 
         // Add the delay information to the message
         Element delayInformation = message.addChildElement("delay", "urn:xmpp:delay");
         delayInformation.addAttribute("stamp", XMPPDateTimeFormat.format(sentDate));
-        if (room.canAnyoneDiscoverJID()) {
+        if (getRoom().canAnyoneDiscoverJID()) {
             // Set the Full JID as the "from" attribute
             delayInformation.addAttribute("from", senderJID);
         }
         else {
             // Set the Room JID as the "from" attribute
-            delayInformation.addAttribute("from", room.getRole().getRoleAddress().toString());
+            delayInformation.addAttribute("from", getRoom().getRole().getRoleAddress().toString());
         }
         historyStrategy.addMessage(message);
+    }
+
+    /**
+     * Returns the room for which this instance is operating.
+     *
+     * @return A room.
+     */
+    protected synchronized MUCRoom getRoom() {
+        if (room == null) {
+            final MultiUserChatService service = XMPPServer.getInstance().getMultiUserChatManager().getMultiUserChatService(roomAddress);
+            if (service == null) {
+                throw new IllegalStateException("Deserializing history for non-existing service of room named " + roomAddress);
+            }
+            room = service.getChatRoom(roomAddress.getNode());
+            if (room == null) {
+                throw new IllegalStateException("Deserializing history for non-existing room named " + roomAddress);
+            }
+        }
+        return room;
     }
 
     /**
@@ -243,5 +278,32 @@ public final class MUCRoomHistory {
      */
     public boolean isSubjectChangeRequest(Message message) {
         return historyStrategy.isSubjectChangeRequest(message);
+    }
+
+    @Override
+    public boolean equals(Object o) {
+        if (this == o) return true;
+        if (o == null || getClass() != o.getClass()) return false;
+        MUCRoomHistory that = (MUCRoomHistory) o;
+        return isNonAnonymousRoom == that.isNonAnonymousRoom && roomAddress.equals(that.roomAddress) && historyStrategy.equals(that.historyStrategy);
+    }
+
+    @Override
+    public int hashCode() {
+        return Objects.hash(roomAddress, historyStrategy, isNonAnonymousRoom);
+    }
+
+    @Override
+    public void writeExternal(ObjectOutput out) throws IOException {
+        ExternalizableUtil.getInstance().writeSerializable(out, roomAddress);
+        ExternalizableUtil.getInstance().writeBoolean(out, isNonAnonymousRoom);
+        ExternalizableUtil.getInstance().writeSerializable(out, historyStrategy);
+    }
+
+    @Override
+    public void readExternal(ObjectInput in) throws IOException, ClassNotFoundException {
+        roomAddress = (JID) ExternalizableUtil.getInstance().readSerializable(in);
+        isNonAnonymousRoom = ExternalizableUtil.getInstance().readBoolean(in);
+        historyStrategy = (HistoryStrategy) ExternalizableUtil.getInstance().readSerializable(in);
     }
 }

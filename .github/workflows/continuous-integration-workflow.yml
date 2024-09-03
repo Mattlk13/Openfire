@@ -60,12 +60,12 @@ jobs:
 
     steps:
       - name: Download distribution artifact from build job.
-        uses: actions/download-artifact@v2
+        uses: actions/download-artifact@v4.1.7
         with:
           name: distribution-java1.8
           path: distribution/target/distribution-base
       - name: Download test files from build job.
-        uses: actions/download-artifact@v2
+        uses: actions/download-artifact@v4.1.7
         with:
           name: test-files
       - name: Fix file permissions
@@ -118,12 +118,12 @@ jobs:
 
     steps:
       - name: Download distribution artifact from build job.
-        uses: actions/download-artifact@v2
+        uses: actions/download-artifact@v4.1.7
         with:
           name: distribution-java1.8
           path: distribution/target/distribution-base
       - name: Download test files from build job.
-        uses: actions/download-artifact@v2
+        uses: actions/download-artifact@v4.1.7
         with:
           name: test-files
       - name: Set up Java
@@ -145,12 +145,12 @@ jobs:
 
     steps:
       - name: Download distribution artifact from build job.
-        uses: actions/download-artifact@v2
+        uses: actions/download-artifact@v4.1.7
         with:
           name: distribution-java1.8
           path: distribution/target/distribution-base
       - name: Download test files from build job.
-        uses: actions/download-artifact@v2
+        uses: actions/download-artifact@v4.1.7
         with:
           name: test-files
       - name: Set up Java
@@ -245,7 +245,7 @@ jobs:
           ref: ${{ github.event.push.after }}
 
       - name: Download distribution artifact from build job.
-        uses: actions/download-artifact@v2
+        uses: actions/download-artifact@v4.1.7
         with:
           name: distribution-java11
           path: distribution/target/distribution-base
